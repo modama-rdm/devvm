@@ -1,0 +1,27 @@
+#cloud-config
+# Placeholders (VM_NAME, VM_USER, SSH_PUBKEY between @ signs) are substituted by devvm.sh.
+# No host credentials, shared folders or secrets are passed into the VM.
+hostname: @VM_NAME@
+users:
+  - name: @VM_USER@
+    groups: [sudo, docker]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - @SSH_PUBKEY@
+package_update: true
+packages:
+  - docker.io
+  - docker-compose
+  - docker-buildx
+  - git
+  - curl
+  - build-essential
+  - python3-venv
+  - nodejs
+  - npm
+  - cifs-utils
+  - acl
+runcmd:
+  - systemctl enable --now docker
+  - su - @VM_USER@ -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
