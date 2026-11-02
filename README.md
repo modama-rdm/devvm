@@ -89,8 +89,8 @@ The VM has no credentials for the upstream repository. Instead, the host reposit
 `~/data-management-system` in the VM over SSH:
 
 ```
-git fetch origin                       # on the host, to get the current upstream state
-./devvm.sh push                        # origin/master -> branch master in the VM
+./devvm.sh push                        # the branch checked out here -> same branch in the VM
+./devvm.sh push origin/master          # after git fetch: upstream master -> branch master
 ./devvm.sh push origin/some-branch     # -> branch some-branch in the VM
 ./devvm.sh fetch                       # VM branches -> <vm-name>/* on the host
 git push origin modama-feature-a/my-feature:my-feature   # on the host, then open the MR
@@ -120,7 +120,7 @@ the host keeps the decision about what reaches upstream with you.
 
 ```
 ./devvm.sh create && ./devvm.sh wait && ./devvm.sh snapshot
-./devvm.sh push origin/master
+./devvm.sh push                        # the branch of this worktree
 ./devvm.sh setup-dev                   # git name/email from the host, installs Claude Code
 ./devvm.sh ssh                         # then: cd data-management-system && claude
 ```
@@ -139,8 +139,9 @@ worth keeping first.
 
 ```
 ./devvm.sh -n modama-test create && ./devvm.sh -n modama-test wait
-./devvm.sh -n modama-test test-deploy                     # origin/master
-./devvm.sh -n modama-test test-deploy my-branch --clean   # a local branch, from scratch
+./devvm.sh -n modama-test test-deploy                     # the branch checked out here
+./devvm.sh -n modama-test test-deploy origin/master       # after git fetch: upstream master
+./devvm.sh -n modama-test test-deploy my-branch --clean   # another local branch, from scratch
 ```
 
 `test-deploy` pushes the given ref, checks out that commit in the VM and runs

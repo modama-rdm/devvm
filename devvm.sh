@@ -177,13 +177,15 @@ All commands act on the VM of this checkout, ${VM_NAME:-none on a detached HEAD}
   destroy [-y]      remove the VM, its disk and snapshots (keeps base image and host key)
   prune             delete base images that no VM disk and no current setting uses
 
-  push [REF]        push REF (default: origin/master) from the host repository
-                    to the VM's checkout ~/$VM_REPO; origin/BRANCH becomes branch BRANCH
+  push [REF]        push REF (default: the branch checked out here) from the host
+                    repository to the VM's checkout ~/$VM_REPO; origin/BRANCH
+                    becomes branch BRANCH in the VM
   fetch             fetch the VM's branches into the host as $VM_NAME/*
   setup-dev         copy the host's git identity and install Claude Code in the VM
   test-deploy [REF] [--clean]
-                    push REF, build and start the test deployment in the VM and
-                    wait until it is up; --clean starts from scratch
+                    push REF (default: the branch checked out here), build and
+                    start the test deployment in the VM and wait until it is up;
+                    --clean starts from scratch
 EOF
 }
 
@@ -400,8 +402,17 @@ cmd_prune() {
     done
 }
 
+# The branch checked out in the host repository; the default for push and test-deploy
+current_branch() {
+    local b
+    b=$(as_user git -C "$REPO_ROOT" symbolic-ref --short -q HEAD) ||
+        { echo "Detached HEAD on the host, give the ref to push explicitly" >&2; exit 1; }
+    echo "$b"
+}
+
 cmd_push() {
-    local ref=${1:-origin/master} branch ip new b r
+    local ref=${1:-} branch ip new b r
+    [ -n "$ref" ] || ref=$(current_branch)
     branch=${ref#origin/}
     as_user git -C "$REPO_ROOT" check-ref-format --branch "$branch" > /dev/null
     # check-ref-format allows shell metacharacters; the branch ends up in a remote command
@@ -438,13 +449,14 @@ cmd_setup_dev() {
 }
 
 cmd_test_deploy() {
-    local ref=origin/master clean='' commit
+    local ref= clean='' commit
     for arg in "$@"; do
         case $arg in
             --clean) clean=--clean ;;
             *) ref=$arg ;;
         esac
     done
+    [ -n "$ref" ] || ref=$(current_branch)
     commit=$(as_user git -C "$REPO_ROOT" rev-parse --verify "$ref^{commit}")
     cmd_push "$ref"
     vm_ssh "bash -s -- $(printf '%q ' "$VM_REPO" "$commit" $clean)" < "$HERE/guest/test-deployment.sh"
