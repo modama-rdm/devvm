@@ -1,5 +1,6 @@
 #cloud-config
 # Placeholders (VM_NAME, VM_USER, SSH_PUBKEY between @ signs) are substituted by devvm.sh.
+# devvm.sh appends ssh_keys with the VM's host key, generated on the host.
 # No host credentials, shared folders or secrets are passed into the VM.
 hostname: @VM_NAME@
 users:
@@ -8,7 +9,7 @@ users:
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     ssh_authorized_keys:
-      - @SSH_PUBKEY@
+      - '@SSH_PUBKEY@'
 package_update: true
 packages:
   - docker.io
