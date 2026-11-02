@@ -1,10 +1,15 @@
 #!/bin/bash
-# Manage a libvirt/KVM development VM for working on deploy/ with Docker.
-# Settings: defaults.env < ~/.config/modama-devvm/site.env < environment;
-# VM_NAME defaults to the branch of this checkout. See README.md.
+# devvm: disposable libvirt/KVM development VMs, one per git branch or worktree.
+#
+# Acts on the git repository of the current directory (the "project"). Settings, each
+# overriding the previous: defaults.env next to this script < the project's
+# .devvm/config.env < ~/.config/devvm/site.env < environment. A project can add
+# provisioning (.devvm/provision.sh) and commands (.devvm/commands.sh). See README.md.
 set -euo pipefail
 
-HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# Resolved, so that a symlink on PATH (e.g. ~/.local/bin/devvm) finds the tool's files
+HERE=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+PROG=$(basename "$0")
 
 # Under sudo only libvirt needs root; files, downloads and SSH belong to the invoking user
 if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
@@ -27,16 +32,22 @@ libvirt_group_hint() {
     # Already added, but this login predates it
     if id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx libvirt; then
         echo "$USER_NAME is in the libvirt group, but this session is not yet. Log in again" >&2
-        echo "(or start a shell with: newgrp libvirt) to run $(basename "$0") without sudo." >&2
+        echo "(or start a shell with: newgrp libvirt) to run $PROG without sudo." >&2
         return
     fi
-    echo "Add $USER_NAME to the libvirt group to run $(basename "$0") without sudo:" >&2
+    echo "Add $USER_NAME to the libvirt group to run $PROG without sudo:" >&2
     echo "    sudo usermod -aG libvirt $USER_NAME" >&2
     echo "then log in again (or start a shell with: newgrp libvirt)." >&2
 }
 
-# Site-specific settings of the invoking user, created by `setup`
-SITE_ENV=$USER_HOME/.config/modama-devvm/site.env
+# Site-specific settings of the invoking user, shared by all projects, created by `setup`
+SITE_ENV=$USER_HOME/.config/devvm/site.env
+# Location before devvm was split from the modama project
+OLD_SITE_ENV=$USER_HOME/.config/modama-devvm/site.env
+if [ ! -f "$SITE_ENV" ] && [ -f "$OLD_SITE_ENV" ]; then
+    echo "Note: using $OLD_SITE_ENV; move it to $SITE_ENV" >&2
+    SITE_ENV=$OLD_SITE_ENV
+fi
 
 cmd_setup() {
     local pool pubkey default_key answer f
@@ -44,10 +55,10 @@ cmd_setup() {
         read -rp "$SITE_ENV exists, overwrite? [y/N] " answer
         [ "$answer" = y ] || exit 1
     fi
-    echo "Directory for base images, VM disks and SSH host keys. Needs ~100 GB per VM"
-    echo "and must be traversable (x) by the libvirt-qemu user."
-    read -rp "POOL_DIR [/var/lib/libvirt/images/modama-devvm]: " pool
-    pool=${pool:-/var/lib/libvirt/images/modama-devvm}
+    echo "Directory for base images, VM disks and SSH host keys of all projects. Needs"
+    echo "~100 GB per VM and must be traversable (x) by the libvirt-qemu user."
+    read -rp "POOL_DIR [/var/lib/libvirt/images/devvm]: " pool
+    pool=${pool:-/var/lib/libvirt/images/devvm}
     default_key=
     for f in "$USER_HOME"/.ssh/id_*.pub; do
         [ -e "$f" ] && { default_key=$f; break; }
@@ -62,11 +73,13 @@ cmd_setup() {
         exit 1
     fi
     chmod o+x "$pool" 2>/dev/null || true   # libvirt-qemu must be able to traverse it
+    SITE_ENV=$USER_HOME/.config/devvm/site.env
     as_user mkdir -p "$(dirname "$SITE_ENV")"
     as_user tee "$SITE_ENV" > /dev/null <<EOF
-# Site-specific settings for devvm.sh, written by \`devvm.sh setup\` on $(date -I).
-# Generic defaults are in devvm/defaults.env; any variable can be overridden per
-# command in the environment, e.g. RAM_MB=32768 ./devvm.sh create
+# Site-specific settings for devvm, written by \`devvm setup\` on $(date -I).
+# They apply to all projects. Generic defaults are in defaults.env next to devvm.sh,
+# project settings in .devvm/config.env of each project; any variable can be
+# overridden per command in the environment, e.g. RAM_MB=32768 devvm create
 
 # Directory for base images, VM disks and SSH host keys (~100 GB per VM, must be
 # traversable by the libvirt-qemu user)
@@ -76,12 +89,48 @@ POOL_DIR=$pool
 SSH_PUBKEY_FILE=$pubkey
 EOF
     echo "Wrote $SITE_ENV"
+    [ -f "$OLD_SITE_ENV" ] && echo "$OLD_SITE_ENV is no longer needed"
     if in_libvirt_group; then
         echo "$USER_NAME is in the libvirt group, no sudo needed"
     else
         libvirt_group_hint
     fi
 }
+
+# The project: the git repository of the current directory, if any
+REPO_ROOT=$(as_user git rev-parse --show-toplevel 2>/dev/null || true)
+PROJECT_DIR=${REPO_ROOT:+$REPO_ROOT/.devvm}
+
+cmd_init() {
+    [ -n "$REPO_ROOT" ] || { echo "Not in a git repository" >&2; exit 1; }
+    [ -e "$PROJECT_DIR/config.env" ] && { echo "$PROJECT_DIR/config.env exists" >&2; exit 1; }
+    as_user mkdir -p "$PROJECT_DIR"
+    as_user tee "$PROJECT_DIR/config.env" > /dev/null <<EOF
+# devvm settings for this project; they override devvm's defaults.env, see its README.
+# Commit this file. Optional companions in this folder: provision.sh (runs once in a
+# new VM as the VM user) and commands.sh (project-specific devvm commands).
+
+# VMs of this project are named <prefix><branch>
+VM_PREFIX=$(default_prefix)
+
+# Debian packages installed in the VM
+#PACKAGES="\$PACKAGES build-essential"
+
+#VCPUS=4
+#RAM_MB=8192
+#DISK_GB=40
+EOF
+    echo "Wrote $PROJECT_DIR/config.env"
+}
+
+# Name of the project's main checkout (also for linked worktrees), as a VM name stem
+repo_name() {
+    local common
+    common=$(as_user git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)
+    case "$common" in */.git) common=${common%/.git} ;; esac
+    basename "$common"
+}
+default_prefix() { echo "$(repo_name | tr -c 'A-Za-z0-9\n' '-')-"; }
 
 # Global option: -n VM addresses a VM other than this checkout's own
 OPT_VM_NAME=
@@ -93,10 +142,10 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ "${1:-}" = setup ]; then
-    cmd_setup
-    exit 0
-fi
+case "${1:-}" in
+    setup) cmd_setup; exit 0 ;;
+    init) cmd_init; exit 0 ;;
+esac
 
 NO_COMMAND=
 if [ $# -eq 0 ]; then
@@ -110,31 +159,46 @@ fi
 saved_env=$(export -p)
 # shellcheck source=defaults.env
 source "$HERE/defaults.env"
+if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/config.env" ]; then
+    # shellcheck source=/dev/null
+    source "$PROJECT_DIR/config.env"
+fi
 if [ -f "$SITE_ENV" ]; then
     # shellcheck source=/dev/null
     source "$SITE_ENV"
 elif [ -n "$NO_COMMAND" ]; then
     POOL_DIR=/unconfigured SSH_PUBKEY_FILE=/unconfigured
 else
-    echo "Missing $SITE_ENV, run: $0 setup" >&2
+    echo "Missing $SITE_ENV, run: $PROG setup" >&2
     exit 1
 fi
 eval "$saved_env"
 [ -n "$OPT_VM_NAME" ] && VM_NAME=$OPT_VM_NAME
+if [ -n "$REPO_ROOT" ]; then
+    : "${VM_REPO:=$(repo_name)}"
+    : "${VM_PREFIX:=$(default_prefix)}"
+fi
 
-# One VM per checkout: the name defaults to the branch this script runs from, so
-# every worktree gets its own VM with its own disk, snapshots and host refs
+# One VM per checkout: the name defaults to the branch of the current directory, so
+# every worktree gets its own VM with its own disk, snapshots and host refs.
+# Without a branch (detached HEAD, or not in a repository) there is no default, and
+# only the usage text and ls work without -n.
 if [ -z "${VM_NAME:-}" ]; then
-    branch=$(as_user git -C "$HERE" rev-parse --abbrev-ref HEAD)
-    if [ "$branch" = HEAD ]; then
-        # Detached: no name of its own, and "modama-HEAD" would be shared by every
-        # detached checkout. Only the usage text and ls work without a VM.
+    branch=
+    [ -n "$REPO_ROOT" ] && branch=$(as_user git -C "$REPO_ROOT" symbolic-ref --short -q HEAD || true)
+    if [ -n "$branch" ]; then
+        VM_NAME=$VM_PREFIX$(tr -c 'A-Za-z0-9\n' '-' <<< "$branch")
+    else
         case "${1:-}" in
             ""|ls) VM_NAME= ;;
-            *) echo "Detached HEAD, no default VM: pass -n VM (see: $(basename "$0") ls)" >&2; exit 1 ;;
+            *)
+                if [ -n "$REPO_ROOT" ]; then
+                    echo "Detached HEAD, no default VM: pass -n VM (see: $PROG ls)" >&2
+                else
+                    echo "Not in a git repository, no default VM: pass -n VM (see: $PROG ls -a)" >&2
+                fi
+                exit 1 ;;
         esac
-    else
-        VM_NAME=$VM_PREFIX$(tr -c 'A-Za-z0-9\n' '-' <<< "$branch")
     fi
 fi
 # The name is a libvirt domain, a file name stem, a hostname and an ssh alias
@@ -154,20 +218,29 @@ BASE_DIR=$POOL_DIR/base
 HOSTKEY=$POOL_DIR/$VM_NAME.hostkey
 KNOWN_HOSTS=$POOL_DIR/$VM_NAME.known_hosts
 SSH_OPTS="-o UserKnownHostsFile=$KNOWN_HOSTS -o HostKeyAlias=$VM_NAME -o StrictHostKeyChecking=yes"
-REPO_ROOT=$(as_user git -C "$HERE" rev-parse --show-toplevel)
+
+# Project commands: .devvm/commands.sh defines project_cmd_<name> functions (with -
+# in <name> written as _) and may append lines to PROJECT_USAGE
+PROJECT_USAGE=
+if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/commands.sh" ]; then
+    # shellcheck source=/dev/null
+    source "$PROJECT_DIR/commands.sh"
+fi
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [-n VM] COMMAND [ARGS]
+Usage: $PROG [-n VM] COMMAND [ARGS]
 
-All commands act on the VM of this checkout, ${VM_NAME:-none on a detached HEAD}, unless -n VM (long form
---vm VM, or VM_NAME=VM in the environment) selects another one.
+Project: ${REPO_ROOT:-none (not in a git repository)}
+All commands act on the VM of this checkout, ${VM_NAME:-none without a branch}, unless -n VM
+(long form --vm VM, or VM_NAME=VM in the environment) selects another one.
 
-  setup             write the site settings to ~/.config/modama-devvm/site.env
+  setup             write the site settings to ~/.config/devvm/site.env
+  init              create .devvm/config.env for the project
   ls [-a]           list the VMs of this project, with -a all VMs on this host;
                     * marks the one of this checkout
   create            download base image, create and start the VM
-  wait              wait until cloud-init has finished and Docker works
+  wait              wait until cloud-init (and the project's provisioning) has finished
   ssh [CMD...]      log in to the VM or run a command there
   ip                print the VM's IP address
   status            show VM state and snapshots
@@ -178,15 +251,19 @@ All commands act on the VM of this checkout, ${VM_NAME:-none on a detached HEAD}
   prune             delete base images that no VM disk and no current setting uses
 
   push [REF]        push REF (default: the branch checked out here) from the host
-                    repository to the VM's checkout ~/$VM_REPO; origin/BRANCH
+                    repository to the VM's checkout ~/${VM_REPO:-REPO}; origin/BRANCH
                     becomes branch BRANCH in the VM
-  fetch             fetch the VM's branches into the host as $VM_NAME/*
+  fetch             fetch the VM's branches into the host as ${VM_NAME:-VM}/*
   setup-dev         copy the host's git identity and install Claude Code in the VM
-  test-deploy [REF] [--clean]
-                    push REF (default: the branch checked out here), build and
-                    start the test deployment in the VM and wait until it is up;
-                    --clean starts from scratch
 EOF
+    if [ -n "$PROJECT_USAGE" ]; then
+        printf '\nCommands of this project (%s):\n%s\n' "$PROJECT_DIR/commands.sh" "$PROJECT_USAGE"
+    fi
+}
+
+# Commands that act on the project's repository need one
+require_repo() {
+    [ -n "$REPO_ROOT" ] || { echo "Not in a git repository" >&2; exit 1; }
 }
 
 # Empty if the VM has no lease (yet) or is not running; never fails, so that
@@ -205,7 +282,7 @@ require_ip() {
             return
         fi
         if ! state=$(virsh domstate "$VM_NAME" 2>/dev/null); then
-            echo "No VM $VM_NAME, see: $(basename "$0") ls" >&2
+            echo "No VM $VM_NAME, see: $PROG ls" >&2
             exit 1
         fi
         if [ "$state" = "shut off" ]; then
@@ -220,7 +297,7 @@ require_ip() {
 
 # known_hosts is derived from the host key; HostKeyAlias keeps it independent of the IP
 write_known_hosts() {
-    [ -f "$HOSTKEY.pub" ] || { echo "No host key $HOSTKEY.pub, was the VM created by this script?" >&2; exit 1; }
+    [ -f "$HOSTKEY.pub" ] || { echo "No host key $HOSTKEY.pub, was the VM created by $PROG?" >&2; exit 1; }
     as_user mkdir -p "$POOL_DIR"
     echo "$VM_NAME $(cut -d' ' -f1,2 "$HOSTKEY.pub")" | as_user tee "$KNOWN_HOSTS" > /dev/null
 }
@@ -236,6 +313,7 @@ vm_ssh() {
 # git in the host repository, talking to the VM over SSH. Commits travel through the
 # host, so the VM never holds credentials for the upstream repository.
 vm_git() {
+    require_repo
     [ -f "$KNOWN_HOSTS" ] || write_known_hosts
     as_user env GIT_SSH_COMMAND="ssh $SSH_OPTS" \
         git -C "$REPO_ROOT" "$@"
@@ -249,6 +327,32 @@ render() {
     pubkey=$(head -1 "$SSH_PUBKEY_FILE" | sed "s/'/''/g; s/[|&\\\\]/\\\\&/g")
     sed -e "s|@VM_NAME@|$VM_NAME|g" -e "s|@VM_USER@|$VM_USER|g" \
         -e "s|@SSH_PUBKEY@|$pubkey|g" "$1"
+}
+
+# The parts of user-data that come from settings: packages, the project's provisioning
+# script and the host key. Appended to the template as further top-level keys.
+user_data_extra() {
+    local pkg
+    [[ $PACKAGES =~ ^[A-Za-z0-9.+:\ -]*$ ]] || { echo "Invalid PACKAGES: $PACKAGES" >&2; exit 1; }
+    echo "packages:"
+    for pkg in $PACKAGES; do echo "  - $pkg"; done
+    echo "runcmd:"
+    echo "  - if command -v docker > /dev/null; then systemctl enable --now docker; fi"
+    if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/provision.sh" ]; then
+        # Runs once, as the VM user, after the packages are installed; a failure makes
+        # cloud-init, and with it `wait`, report an error
+        echo "  - [su, '-', '$VM_USER', '-c', '/usr/local/lib/devvm/provision.sh']"
+        echo "write_files:"
+        echo "  - path: /usr/local/lib/devvm/provision.sh"
+        echo "    permissions: '0755'"
+        echo "    encoding: b64"
+        echo "    content: $(base64 -w0 "$PROJECT_DIR/provision.sh")"
+    fi
+    echo "ssh_genkeytypes: [ed25519]"
+    echo "ssh_keys:"
+    echo "  ed25519_private: |"
+    sed 's/^/    /' "$HOSTKEY"
+    echo "  ed25519_public: $(cat "$HOSTKEY.pub")"
 }
 
 cmd_create() {
@@ -270,10 +374,9 @@ cmd_create() {
 
     # Copy-on-write overlay, the base image stays untouched
     if [ -e "$DISK" ]; then
-        echo "$DISK exists; run '$0 -n $VM_NAME destroy' first" >&2
+        echo "$DISK exists; run '$PROG -n $VM_NAME destroy' first" >&2
         exit 1
     fi
-    as_user qemu-img create -f qcow2 -F qcow2 -b "$BASE_DIR/$IMAGE_FILE" "$DISK" "${DISK_GB}G"
 
     local ci_dir
     ci_dir=$(mktemp -d)
@@ -281,21 +384,15 @@ cmd_create() {
     # holds the VM's private host key, so it must not be left behind.
     # shellcheck disable=SC2064
     trap "rm -rf -- '$ci_dir'" EXIT
-    render "$HERE/cloud-init/user-data.tmpl" > "$ci_dir/user-data"
-    render "$HERE/cloud-init/meta-data.tmpl" > "$ci_dir/meta-data"
     # Host key: kept across re-creates, so a VM of this name keeps its identity
     if [ ! -f "$HOSTKEY" ]; then
         as_user ssh-keygen -q -t ed25519 -N '' -C "$VM_NAME host key" -f "$HOSTKEY"
     fi
-    {
-        echo "ssh_genkeytypes: [ed25519]"
-        echo "ssh_keys:"
-        echo "  ed25519_private: |"
-        sed 's/^/    /' "$HOSTKEY"
-        echo "  ed25519_public: $(cat "$HOSTKEY.pub")"
-    } >> "$ci_dir/user-data"
+    { render "$HERE/cloud-init/user-data.tmpl"; user_data_extra; } > "$ci_dir/user-data"
+    render "$HERE/cloud-init/meta-data.tmpl" > "$ci_dir/meta-data"
     write_known_hosts
 
+    as_user qemu-img create -q -f qcow2 -F qcow2 -b "$BASE_DIR/$IMAGE_FILE" "$DISK" "${DISK_GB}G"
     virsh net-start "$NETWORK" &>/dev/null || true
     virt-install --name "$VM_NAME" --vcpus "$VCPUS" --memory "$RAM_MB" \
         --cpu host-passthrough --osinfo "$OS_VARIANT" \
@@ -307,7 +404,7 @@ cmd_create() {
 
     local ip
     ip=$(require_ip)
-    echo "$VM_NAME is at $ip. Next: $0 wait && $0 snapshot"
+    echo "$VM_NAME is at $ip. Next: $PROG wait && $PROG snapshot"
 }
 
 cmd_wait() {
@@ -323,7 +420,14 @@ cmd_wait() {
         sleep 3
     done
     [ -n "${err:-}" ] && echo "last error: $err" >&2
-    vm_ssh 'cloud-init status --wait && docker version --format "Docker {{.Server.Version}}" && docker compose version'
+    # A failed package install or provisioning script shows up as cloud-init error
+    if ! vm_ssh 'cloud-init status --wait > /dev/null'; then
+        echo "cloud-init reported an error; details: $PROG ssh sudo cloud-init status --long" >&2
+        vm_ssh 'sudo tail -n 30 /var/log/cloud-init-output.log' >&2 || true
+        exit 1
+    fi
+    vm_ssh 'echo "cloud-init done"; if command -v docker > /dev/null; then
+        docker version --format "Docker {{.Server.Version}}" && docker compose version; fi'
     eject_cdroms
 }
 
@@ -363,8 +467,15 @@ cmd_destroy() {
 }
 
 cmd_ls() {
-    local filter="^$VM_PREFIX" name state ip size snaps mark
-    [ "${1:-}" = -a ] && filter=.
+    local filter name state ip size snaps mark
+    if [ "${1:-}" = -a ]; then
+        filter=.
+    elif [ -n "${VM_PREFIX:-}" ]; then
+        filter="^$VM_PREFIX"
+    else
+        echo "Not in a git repository, listing all VMs" >&2
+        filter=.
+    fi
     printf '  %-28s %-10s %-16s %6s  %s\n' VM STATE IP USED SNAPSHOTS
     while read -r name; do
         [ -n "$name" ] || continue
@@ -402,9 +513,10 @@ cmd_prune() {
     done
 }
 
-# The branch checked out in the host repository; the default for push and test-deploy
+# The branch checked out in the host repository; the default for push
 current_branch() {
     local b
+    require_repo
     b=$(as_user git -C "$REPO_ROOT" symbolic-ref --short -q HEAD) ||
         { echo "Detached HEAD on the host, give the ref to push explicitly" >&2; exit 1; }
     echo "$b"
@@ -412,6 +524,7 @@ current_branch() {
 
 cmd_push() {
     local ref=${1:-} branch ip new b r
+    require_repo
     [ -n "$ref" ] || ref=$(current_branch)
     branch=${ref#origin/}
     as_user git -C "$REPO_ROOT" check-ref-format --branch "$branch" > /dev/null
@@ -437,29 +550,16 @@ cmd_push() {
 
 cmd_fetch() {
     local ip
+    require_repo
     ip=$(require_ip)
     vm_git fetch "$VM_USER@$ip:$VM_REPO" "+refs/heads/*:refs/remotes/$VM_NAME/*"
 }
 
 cmd_setup_dev() {
     local name email
-    name=$(as_user git -C "$REPO_ROOT" config user.name || true)
-    email=$(as_user git -C "$REPO_ROOT" config user.email || true)
+    name=$(as_user git ${REPO_ROOT:+-C "$REPO_ROOT"} config user.name || true)
+    email=$(as_user git ${REPO_ROOT:+-C "$REPO_ROOT"} config user.email || true)
     vm_ssh "bash -s -- $(printf '%q ' "$name" "$email")" < "$HERE/guest/setup-dev.sh"
-}
-
-cmd_test_deploy() {
-    local ref='' clean='' commit
-    for arg in "$@"; do
-        case $arg in
-            --clean) clean=--clean ;;
-            *) ref=$arg ;;
-        esac
-    done
-    [ -n "$ref" ] || ref=$(current_branch)
-    commit=$(as_user git -C "$REPO_ROOT" rev-parse --verify "$ref^{commit}")
-    cmd_push "$ref"
-    vm_ssh "bash -s -- $(printf '%q ' "$VM_REPO" "$commit" $clean)" < "$HERE/guest/test-deployment.sh"
 }
 
 case "${1:-}" in
@@ -478,6 +578,15 @@ case "${1:-}" in
     push) shift; cmd_push "$@" ;;
     fetch) cmd_fetch ;;
     setup-dev) cmd_setup_dev ;;
-    test-deploy) shift; cmd_test_deploy "$@" ;;
-    *) usage; exit 1 ;;
+    "") usage; exit 1 ;;
+    *)
+        fn=project_cmd_${1//-/_}
+        if [[ $1 =~ ^[a-z][a-z0-9-]*$ ]] && declare -F "$fn" > /dev/null; then
+            shift
+            "$fn" "$@"
+        else
+            echo "Unknown command: $1" >&2
+            usage >&2
+            exit 1
+        fi ;;
 esac
