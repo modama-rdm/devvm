@@ -24,6 +24,12 @@ in_libvirt_group() {
     if [ -n "${SUDO_USER:-}" ]; then id -nG "$USER_NAME"; else id -nG; fi | tr ' ' '\n' | grep -qx libvirt
 }
 libvirt_group_hint() {
+    # Already added, but this login predates it
+    if id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx libvirt; then
+        echo "$USER_NAME is in the libvirt group, but this session is not yet. Log in again" >&2
+        echo "(or start a shell with: newgrp libvirt) to run $(basename "$0") without sudo." >&2
+        return
+    fi
     echo "Add $USER_NAME to the libvirt group to run $(basename "$0") without sudo:" >&2
     echo "    sudo usermod -aG libvirt $USER_NAME" >&2
     echo "then log in again (or start a shell with: newgrp libvirt)." >&2
@@ -33,7 +39,7 @@ libvirt_group_hint() {
 SITE_ENV=$USER_HOME/.config/modama-devvm/site.env
 
 cmd_setup() {
-    local pool pubkey default_key answer
+    local pool pubkey default_key answer f
     if [ -f "$SITE_ENV" ]; then
         read -rp "$SITE_ENV exists, overwrite? [y/N] " answer
         [ "$answer" = y ] || exit 1
@@ -42,7 +48,10 @@ cmd_setup() {
     echo "and must be traversable (x) by the libvirt-qemu user."
     read -rp "POOL_DIR [/var/lib/libvirt/images/modama-devvm]: " pool
     pool=${pool:-/var/lib/libvirt/images/modama-devvm}
-    default_key=$(ls "$USER_HOME"/.ssh/id_*.pub 2>/dev/null | head -1 || true)
+    default_key=
+    for f in "$USER_HOME"/.ssh/id_*.pub; do
+        [ -e "$f" ] && { default_key=$f; break; }
+    done
     read -rp "Public key that may log in to the VMs [${default_key:-none found}]: " pubkey
     pubkey=${pubkey:-$default_key}
     as_user test -r "$pubkey" || { echo "Cannot read $pubkey" >&2; exit 1; }
@@ -102,6 +111,7 @@ saved_env=$(export -p)
 # shellcheck source=defaults.env
 source "$HERE/defaults.env"
 if [ -f "$SITE_ENV" ]; then
+    # shellcheck source=/dev/null
     source "$SITE_ENV"
 elif [ -n "$NO_COMMAND" ]; then
     POOL_DIR=/unconfigured SSH_PUBKEY_FILE=/unconfigured
@@ -115,10 +125,20 @@ eval "$saved_env"
 # One VM per checkout: the name defaults to the branch this script runs from, so
 # every worktree gets its own VM with its own disk, snapshots and host refs
 if [ -z "${VM_NAME:-}" ]; then
-    VM_NAME=$VM_PREFIX$(as_user git -C "$HERE" rev-parse --abbrev-ref HEAD | tr -c 'A-Za-z0-9\n' '-')
+    branch=$(as_user git -C "$HERE" rev-parse --abbrev-ref HEAD)
+    if [ "$branch" = HEAD ]; then
+        # Detached: no name of its own, and "modama-HEAD" would be shared by every
+        # detached checkout. Only the usage text and ls work without a VM.
+        case "${1:-}" in
+            ""|ls) VM_NAME= ;;
+            *) echo "Detached HEAD, no default VM: pass -n VM (see: $(basename "$0") ls)" >&2; exit 1 ;;
+        esac
+    else
+        VM_NAME=$VM_PREFIX$(tr -c 'A-Za-z0-9\n' '-' <<< "$branch")
+    fi
 fi
 # The name is a libvirt domain, a file name stem, a hostname and an ssh alias
-[[ $VM_NAME =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "Invalid VM name: $VM_NAME" >&2; exit 1; }
+[ -z "$VM_NAME" ] || [[ $VM_NAME =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "Invalid VM name: $VM_NAME" >&2; exit 1; }
 case "$POOL_DIR" in *[[:space:]]*|"") echo "POOL_DIR must be an absolute path without whitespace" >&2; exit 1 ;; esac
 
 # virt-install needs the system python (python3-gi); e.g. conda envs on PATH break it
@@ -140,7 +160,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [-n VM] COMMAND [ARGS]
 
-All commands act on the VM of this checkout, $VM_NAME, unless -n VM (long form
+All commands act on the VM of this checkout, ${VM_NAME:-none on a detached HEAD}, unless -n VM (long form
 --vm VM, or VM_NAME=VM in the environment) selects another one.
 
   setup             write the site settings to ~/.config/modama-devvm/site.env
@@ -175,14 +195,18 @@ vm_ip() {
 }
 
 require_ip() {
-    local ip
+    local ip state
     for _ in $(seq 60); do
         ip=$(vm_ip)
         if [ -n "$ip" ]; then
             echo "$ip"
             return
         fi
-        if [ "$(virsh domstate "$VM_NAME" 2>/dev/null)" = "shut off" ]; then
+        if ! state=$(virsh domstate "$VM_NAME" 2>/dev/null); then
+            echo "No VM $VM_NAME, see: $(basename "$0") ls" >&2
+            exit 1
+        fi
+        if [ "$state" = "shut off" ]; then
             echo "$VM_NAME is shut off, see /var/log/libvirt/qemu/$VM_NAME.log" >&2
             exit 1
         fi
@@ -251,7 +275,10 @@ cmd_create() {
 
     local ci_dir
     ci_dir=$(mktemp -d)
-    trap 'rm -rf "$ci_dir"' EXIT
+    # Expanded now: ci_dir is local and gone when the EXIT trap runs. The directory
+    # holds the VM's private host key, so it must not be left behind.
+    # shellcheck disable=SC2064
+    trap "rm -rf -- '$ci_dir'" EXIT
     render "$HERE/cloud-init/user-data.tmpl" > "$ci_dir/user-data"
     render "$HERE/cloud-init/meta-data.tmpl" > "$ci_dir/meta-data"
     # Host key: kept across re-creates, so a VM of this name keeps its identity
@@ -272,7 +299,7 @@ cmd_create() {
         --cpu host-passthrough --osinfo "$OS_VARIANT" \
         --disk path="$DISK",bus=virtio \
         --network network="$NETWORK",model=virtio \
-        --cloud-init user-data="$ci_dir/user-data",meta-data="$ci_dir/meta-data",disable=on \
+        --cloud-init "user-data=$ci_dir/user-data,meta-data=$ci_dir/meta-data,disable=on" \
         --graphics none --noautoconsole --import \
         --video virtio  # without any display device the Debian kernel resets right after GRUB
 
@@ -295,6 +322,31 @@ cmd_wait() {
     done
     [ -n "${err:-}" ] && echo "last error: $err" >&2
     vm_ssh 'cloud-init status --wait && docker version --format "Docker {{.Server.Version}}" && docker compose version'
+    eject_cdroms
+}
+
+# virt-install deletes its cloud-init ISO right after creating the VM, but the running
+# VM keeps it in its CD drive until the next reboot. A snapshot taken before that would
+# reference the missing file and could not be reverted, so eject it from the running VM.
+eject_cdroms() {
+    local _type device target source
+    while read -r _type device target source; do
+        if [ "$device" != cdrom ] || [ -z "$source" ] || [ "$source" = - ]; then continue; fi
+        virsh change-media "$VM_NAME" "$target" --eject --live --force > /dev/null
+    done < <(virsh domblklist "$VM_NAME" --details | tail -n +3)
+}
+
+cmd_snapshot() {
+    [ "$(virsh domstate "$VM_NAME")" = running ] && eject_cdroms
+    virsh snapshot-create-as "$VM_NAME" --name "${1:-clean}" --atomic
+}
+
+cmd_reset() {
+    virsh snapshot-revert "$VM_NAME" --snapshotname "${1:-clean}" --running
+    # The guest clock resumes at the time the snapshot was taken; NTP may take a while
+    # (or be unreachable), so set it from the host
+    vm_ssh -o ConnectTimeout=10 "sudo date -u -s @$(date -u +%s) > /dev/null" ||
+        echo "Could not set the VM's clock, it may lag behind" >&2
 }
 
 cmd_destroy() {
@@ -354,11 +406,17 @@ cmd_push() {
     as_user git -C "$REPO_ROOT" check-ref-format --branch "$branch" > /dev/null
     # check-ref-format allows shell metacharacters; the branch ends up in a remote command
     [[ $branch =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || { echo "Unsupported characters in branch name: $branch" >&2; exit 1; }
+    # Check on the host first, so that a typo does not leave an empty repository in the VM
+    as_user git -C "$REPO_ROOT" rev-parse -q --verify "$ref^{commit}" > /dev/null ||
+        { echo "No commit $ref in $REPO_ROOT (for origin/*: git fetch origin first)" >&2; exit 1; }
     ip=$(require_ip)
     b=$(printf %q "$branch"); r=$(printf %q "$VM_REPO")
-    # Pushing to the checked-out branch updates the VM's working tree if it is clean
-    new=$(vm_ssh "test -d $r/.git || { git init -q -b $b $r &&
-        git -C $r config receive.denyCurrentBranch updateInstead && echo new; }")
+    # Pushing to the checked-out branch updates the VM's working tree if it is clean.
+    # "new" as long as the VM repository has no commit, so that an interrupted first
+    # push still gets its submodules on the next one.
+    new=$(vm_ssh "{ test -d $r/.git || { git init -q -b $b $r &&
+        git -C $r config receive.denyCurrentBranch updateInstead; }; } &&
+        { git -C $r rev-parse -q --verify HEAD > /dev/null || echo new; }")
     vm_git push "$VM_USER@$ip:$VM_REPO" "$ref:refs/heads/$branch"
     if [ "$new" = new ]; then
         vm_ssh "cd $r && git reset -q --hard &&
@@ -380,7 +438,7 @@ cmd_setup_dev() {
 }
 
 cmd_test_deploy() {
-    local ref=origin/master clean= commit
+    local ref=origin/master clean='' commit
     for arg in "$@"; do
         case $arg in
             --clean) clean=--clean ;;
@@ -401,8 +459,8 @@ case "${1:-}" in
     status) virsh dominfo "$VM_NAME"; virsh snapshot-list "$VM_NAME" ;;
     start) virsh start "$VM_NAME" ;;
     stop) virsh shutdown "$VM_NAME" ;;
-    snapshot) virsh snapshot-create-as "$VM_NAME" --name "${2:-clean}" --atomic ;;
-    reset) virsh snapshot-revert "$VM_NAME" --snapshotname "${2:-clean}" --running ;;
+    snapshot) cmd_snapshot "${2:-}" ;;
+    reset) cmd_reset "${2:-}" ;;
     destroy) shift; cmd_destroy "$@" ;;
     prune) cmd_prune ;;
     push) shift; cmd_push "$@" ;;
