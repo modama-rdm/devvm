@@ -310,6 +310,16 @@ vm_ssh() {
     as_user ssh $SSH_OPTS "$VM_USER@$ip" "$@"
 }
 
+# Run a local script in the VM with arguments. The script travels as an argument of
+# bash -c, not on stdin: with bash -s, a command in it that reads stdin (e.g. docker
+# compose exec without -T) would swallow the rest of the script. The whole command is
+# one argument of the remote shell, so the script must stay well below 128 KiB.
+vm_run() {
+    local script=$1
+    shift
+    vm_ssh "bash -c $(printf '%q' "$(cat "$script")") $(printf '%q ' "$(basename "$script")" "$@")"
+}
+
 # git in the host repository, talking to the VM over SSH. Commits travel through the
 # host, so the VM never holds credentials for the upstream repository.
 vm_git() {
@@ -559,7 +569,7 @@ cmd_setup_dev() {
     local name email
     name=$(as_user git ${REPO_ROOT:+-C "$REPO_ROOT"} config user.name || true)
     email=$(as_user git ${REPO_ROOT:+-C "$REPO_ROOT"} config user.email || true)
-    vm_ssh "bash -s -- $(printf '%q ' "$name" "$email")" < "$HERE/guest/setup-dev.sh"
+    vm_run "$HERE/guest/setup-dev.sh" "$name" "$email"
 }
 
 case "${1:-}" in

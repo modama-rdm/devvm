@@ -168,7 +168,8 @@ project. `devvm init` creates a starting `config.env`. All files are optional:
 
   | Name | |
   |---|---|
-  | `vm_ssh [ARGS...]` | ssh to the VM, e.g. `vm_ssh "bash -s" < script` |
+  | `vm_run SCRIPT [ARGS...]` | run a local script in the VM (passed as an argument, stdin stays free) |
+  | `vm_ssh [ARGS...]` | ssh to the VM |
   | `vm_git ARGS...` | git in the host repository with SSH set up for the VM |
   | `cmd_push [REF]`, `cmd_fetch` | as the commands |
   | `current_branch` | the branch checked out on the host, fails on a detached HEAD |
@@ -176,8 +177,8 @@ project. `devvm init` creates a starting `config.env`. All files are optional:
   | `REPO_ROOT`, `PROJECT_DIR` | the host repository and its `.devvm/` |
   | `VM_NAME`, `VM_USER`, `VM_REPO` | the VM, its user and the checkout in its home |
 
-  Keep scripts that run inside the VM next to it, e.g. in `.devvm/guest/`, and pipe
-  them in with `vm_ssh "bash -s -- ARGS" < "$PROJECT_DIR/guest/script.sh"`.
+  Keep scripts that run inside the VM next to it, e.g. in `.devvm/guest/`, and run
+  them with `vm_run "$PROJECT_DIR/guest/script.sh" ARGS...`.
 
 `config.env`, `commands.sh` and `provision.sh` are code that runs on the host or in the
 VM, like a Makefile: use `devvm` only in repositories you trust.

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs inside the VM (piped in by devvm.sh setup-dev): git identity and Claude Code.
+# Runs inside the VM (run by `devvm setup-dev`): git identity and Claude Code.
 # Usage: setup-dev.sh GIT_USER_NAME GIT_USER_EMAIL
 set -euo pipefail
 
