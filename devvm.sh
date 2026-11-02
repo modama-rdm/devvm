@@ -449,7 +449,7 @@ cmd_setup_dev() {
 }
 
 cmd_test_deploy() {
-    local ref= clean='' commit
+    local ref='' clean='' commit
     for arg in "$@"; do
         case $arg in
             --clean) clean=--clean ;;
