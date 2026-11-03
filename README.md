@@ -43,22 +43,23 @@ not on its own clone.
 
 ## Configuration
 
-Settings are shell variables, read in this order, later ones win:
+Settings are shell variables named `DEVVM_*`, the same in the files and in the
+environment. They are read in this order, later ones win:
 
 1. `defaults.env` next to `devvm`: generic defaults (image, sizing, network,
    packages)
 2. `.devvm/config.env` of the project, if present
-3. `~/.config/devvm/site.env` of the invoking user, for all projects: `POOL_DIR` for
-   images and disks, and `SSH_PUBKEY_FILE`, the key that may log in. Create it once:
-   `devvm setup`
-4. the environment, per command: `RAM_MB=32768 devvm create`. Under `sudo`, pass
-   them after `sudo`: `sudo RAM_MB=32768 devvm create`.
+3. `~/.config/devvm/site.env` of the invoking user, for all projects:
+   `DEVVM_POOL_DIR` for images and disks, and `DEVVM_SSH_PUBKEY_FILE`, the key that
+   may log in. Create it once: `devvm setup`
+4. the environment, per command: `DEVVM_RAM_MB=32768 devvm create`. Under `sudo`, pass
+   them after `sudo`: `sudo DEVVM_RAM_MB=32768 devvm create`.
 
-`POOL_DIR` needs about 100 GB of free space per VM, must be writable by you and
+`DEVVM_POOL_DIR` needs about 100 GB of free space per VM, must be writable by you and
 traversable by the `libvirt-qemu` user; `setup` creates it or tells you how. The Debian
-cloud image is pinned to a release (`IMAGE_RELEASE`) and verified against the release's
-`SHA512SUMS`; bump it deliberately, test runs are then reproducible. After a bump,
-`devvm prune` deletes downloaded images that no VM uses any more.
+cloud image is pinned to a release (`DEVVM_IMAGE_RELEASE`) and verified against the
+release's `SHA512SUMS`; bump it deliberately, test runs are then reproducible. After a
+bump, `devvm prune` deletes downloaded images that no VM uses any more.
 
 To address a VM other than the one of this checkout, give its name with `-n`:
 `devvm -n myproject-test status`.
@@ -85,8 +86,8 @@ files.
 
 ## Shared folders
 
-By default (`SHARE_WORKSPACE=1`), `create` shares the checkout of the current
-directory with the VM, read-write, at `WORKSPACE_ROOT/<folder name>`
+By default (`DEVVM_SHARE_WORKSPACE=1`), `create` shares the checkout of the current
+directory with the VM, read-write, at `DEVVM_WORKSPACE_ROOT/<folder name>`
 (`/workspaces/...`). Login shells start there. The VM user has the uid and gid of the
 host user, so files keep their owner on both sides; files that containers create as
 root or other users keep those owners on the host, as with Docker on the host. Commits
@@ -97,11 +98,11 @@ absolute host path, so that directory is shared as well, at that path. git in th
 set up not to prune the other worktrees of the repository, whose folders it does not
 see (`gc.worktreePruneExpire=never`); avoid `git worktree prune` in the VM.
 
-Further mounts are given in `MOUNTS`, in the syntax of devcontainer's `mounts`,
+Further mounts are given in `DEVVM_MOUNTS`, in the syntax of devcontainer's `mounts`,
 separated by whitespace or newlines:
 
 ```
-MOUNTS='
+DEVVM_MOUNTS='
 source=${localEnv:HOME}/datasets,target=/data,readonly
 source=build,target=build,type=volume
 '
@@ -129,9 +130,9 @@ an agent loose, or give it a worktree of its own.
 
 ## One VM per branch or worktree
 
-The VM name defaults to `<VM_PREFIX><branch>` of the current checkout (characters other
-than letters and digits become `-`, so `feature/x` gives `myproject-feature-x`; on a
-detached HEAD pass `-n`). `VM_PREFIX` defaults to the repository name and a `-`.
+The VM name defaults to `<DEVVM_VM_PREFIX><branch>` of the current checkout (characters
+other than letters and digits become `-`, so `feature/x` gives `myproject-feature-x`; on
+a detached HEAD pass `-n`). `DEVVM_VM_PREFIX` defaults to the repository name and a `-`.
 Everything is keyed on that name: the disk and snapshots, the SSH host key file, the
 `<name>/*` refs that `fetch` creates on the host. So to work on two things in parallel,
 give each its own worktree and run `devvm` from there; each VM shares its worktree:
@@ -143,17 +144,17 @@ devvm create && devvm wait && devvm snapshot   # VM myproject-feature-a
 ```
 
 The VMs have different addresses on the NAT network, so the published ports of their
-services do not collide. `devvm -n VM ...` addresses any other VM, and `VM_NAME=VM` in
-the environment changes the default, for instance for a long-lived test VM that is not
-tied to a branch. `devvm destroy` removes a VM when its branch is done; the base image
-is shared and stays.
+services do not collide. `devvm -n VM ...` addresses any other VM, and
+`DEVVM_VM_NAME=VM` in the environment changes the default, for instance for a long-lived
+test VM that is not tied to a branch. `devvm destroy` removes a VM when its branch is
+done; the base image is shared and stays.
 
 ## Without a shared checkout: push and fetch
 
-A VM created with `SHARE_WORKSPACE=0` shares no folders with the host (unless `MOUNTS`
-lists some), for instance a test VM on a fixed commit. The host repository pushes to
-and fetches from the checkout `~/<VM_REPO>` in the VM over SSH (`VM_REPO` defaults to
-the repository name):
+A VM created with `DEVVM_SHARE_WORKSPACE=0` shares no folders with the host (unless
+`DEVVM_MOUNTS` lists some), for instance a test VM on a fixed commit. The host
+repository pushes to and fetches from the checkout `~/<DEVVM_VM_REPO>` in the VM over
+SSH (`DEVVM_VM_REPO` defaults to the repository name):
 
 ```
 devvm push                        # the branch checked out here -> same branch in the VM
@@ -169,10 +170,10 @@ if that is clean, and is refused otherwise; a push that is not a fast-forward is
 as well.
 
 SSH to the VM is verified, not trust-on-first-use: `create` generates an ed25519 host
-key in `POOL_DIR` and hands it to cloud-init, and all connections check against it
+key in `DEVVM_POOL_DIR` and hands it to cloud-init, and all connections check against it
 (`StrictHostKeyChecking=yes`). The key is kept when a VM is destroyed, so a VM
-re-created under the same name has the same identity; delete `POOL_DIR/<vm>.hostkey*`
-to rotate it.
+re-created under the same name has the same identity; delete
+`DEVVM_POOL_DIR/<vm>.hostkey*` to rotate it.
 
 Why not SSH agent forwarding (`ssh -A`), in either mode? While a forwarded session is
 open, every process of the VM user can use the agent socket, including a Claude Code
@@ -205,9 +206,9 @@ project. `devvm init` creates a starting `config.env`. All files are optional:
 
 - **`config.env`**: settings that override `defaults.env`, typically
   ```
-  VM_PREFIX=myproject-
-  PACKAGES="$PACKAGES build-essential python3-venv"
-  RAM_MB=8192
+  DEVVM_VM_PREFIX=myproject-
+  DEVVM_PACKAGES="$DEVVM_PACKAGES build-essential python3-venv"
+  DEVVM_RAM_MB=8192
   ```
 - **`provision.sh`**: runs once in a new VM, as the VM user (with passwordless `sudo`),
   after the packages are installed, from cloud-init. `devvm wait` reports a failure,
@@ -223,13 +224,13 @@ project. `devvm init` creates a starting `config.env`. All files are optional:
   |---|---|
   | `vm_run SCRIPT [ARGS...]` | run a local script in the VM (passed as an argument, stdin stays free) |
   | `vm_ssh [ARGS...]` | ssh to the VM |
-  | `vm_workspace` | the shared checkout's path in the VM; empty for a VM with `SHARE_WORKSPACE=0` |
+  | `vm_workspace` | the shared checkout's path in the VM; empty for a VM with `DEVVM_SHARE_WORKSPACE=0` |
   | `vm_git ARGS...` | git in the host repository with SSH set up for the VM |
   | `cmd_push [REF]`, `cmd_fetch` | as the commands |
   | `current_branch` | the branch checked out on the host, fails on a detached HEAD |
   | `as_user CMD...` | run as the invoking user, also under `sudo` |
   | `REPO_ROOT`, `PROJECT_DIR` | the host repository and its `.devvm/` |
-  | `VM_NAME`, `VM_USER`, `VM_REPO` | the VM, its user and the checkout in its home |
+  | `DEVVM_VM_NAME`, `DEVVM_VM_USER`, `DEVVM_VM_REPO` | the VM, its user and the checkout in its home |
 
   Keep scripts that run inside the VM next to it, e.g. in `.devvm/guest/`, and run
   them with `vm_run "$PROJECT_DIR/guest/script.sh" ARGS...`.
@@ -239,13 +240,19 @@ VM, like a Makefile: use `devvm` only in repositories you trust.
 
 ## Upgrading from the version in the data management system repository
 
-devvm started in the data management system ("modama") repository. Its site settings
-moved from `~/.config/modama-devvm/site.env` to `~/.config/devvm/site.env`; the old
-file is still read, with a note, until you move it. Existing VMs, their pool and host
-keys keep working.
+devvm started in the data management system ("modama") repository. Since then:
+
+- All settings are named `DEVVM_<old name>`, e.g. `DEVVM_RAM_MB`, in the files as in
+  the environment, and so are the variables available to project commands
+  (`DEVVM_VM_NAME`, `DEVVM_VM_REPO`, ...). Rename them in `.devvm/config.env` and
+  `.devvm/commands.sh`.
+- The site settings are in `~/.config/devvm/site.env` (formerly
+  `~/.config/modama-devvm/site.env`); run `devvm setup` to create it, with the same
+  pool directory and key as before. Existing VMs, their pool and host keys keep working.
 
 New VMs share the checkout by default. VMs created before that share nothing and keep
-working with `push` and `fetch`; set `SHARE_WORKSPACE=0` to create more of that kind.
+working with `push` and `fetch`; set `DEVVM_SHARE_WORKSPACE=0` to create more of that
+kind.
 
 The command is `devvm` from this repository (installed with `install.sh`) instead of
-`devvm/devvm.sh` in the project; project configurations in `.devvm/` work unchanged.
+`devvm/devvm.sh` in the project.
