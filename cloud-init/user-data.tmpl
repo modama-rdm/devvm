@@ -14,7 +14,7 @@ users:
   - name: @VM_USER@
     uid: @VM_UID@
     primary_group: @VM_USER@
-    groups: [sudo, docker]
+    groups: [sudo, docker, adm]
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     ssh_authorized_keys:

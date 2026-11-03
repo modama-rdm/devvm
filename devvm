@@ -729,7 +729,7 @@ cmd_wait() {
         exit 1
     fi
     echo "SSH is up after $((SECONDS - start)) s. Waiting for cloud-init: packages and the project's"
-    echo "provisioning, usually a few minutes. To watch: $PROG ssh tail -f /var/log/cloud-init-output.log"
+    echo "provisioning, usually a few minutes. To watch: $PROG ssh sudo tail -f /var/log/cloud-init-output.log"
     # One session for the rest, so that a key with a passphrase is asked for once. A failed
     # package install or provisioning script shows up as a cloud-init error (exit 3).
     vm_ssh 'if ! cloud-init status --wait > /dev/null; then
