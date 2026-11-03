@@ -11,3 +11,11 @@ else
     echo "  FAIL  shellcheck"
     exit 1
 fi
+# run_tests must come last in a test file: tests defined after it never run
+for f in tests/unit/*.sh tests/e2e/*.sh; do
+    if [ "$(grep -v '^[[:space:]]*$' "$f" | tail -n 1)" != run_tests ]; then
+        echo "  FAIL  $f: run_tests is not the last line, tests after it would not run"
+        exit 1
+    fi
+done
+echo "  ok    run_tests is last in every test file"

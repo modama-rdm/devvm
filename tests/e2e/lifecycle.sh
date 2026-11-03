@@ -72,6 +72,13 @@ EOF
         ssh-agent -k > /dev/null
         rm -rf '$TMP'" EXIT
 
+    step "a VM above the site's limit is refused, before anything is created"
+    rc=0
+    DEVVM_MAX_RAM_MB=512 "$DEVVM" create > "$TMP/limit.log" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "create ignored DEVVM_MAX_RAM_MB"
+    assert_contains "$(cat "$TMP/limit.log")" "is above this site's limit DEVVM_MAX_RAM_MB=512"
+    ! virsh -c qemu:///system dominfo "$name" > /dev/null 2>&1 || fail "$name was created"
+
     step "create $name"
     # tee would hide create's exit status: take it from PIPESTATUS
     "$DEVVM" create 2>&1 | tee "$TMP/create.log"
@@ -84,6 +91,12 @@ EOF
     out=${out/tail -f/tail -n 1}
     read -ra words <<< "$out"
     "$DEVVM" "${words[@]:1}" || fail "the hint failed: $out"
+
+    assert_contains "$(cat "$TMP/create.log")" "Creating $name: 2 vCPUs, 2048 MB RAM, 8 GB disk"
+    assert_not_contains "$(cat "$TMP/create.log")" "reconnect to the console"
+    out=$("$DEVVM" status)
+    assert_contains "$out" "State:      running"
+    assert_contains "$out" "Size:       2 vCPUs, 2048 MB RAM"
 
     step "VM user and provisioning"
     out=$("$DEVVM" ssh id -nG)
@@ -127,6 +140,12 @@ EOF
     assert_contains "$out" "clean"
     ! "$DEVVM" snapshot -d nosuch > /dev/null 2>&1 || fail "deleting a missing snapshot succeeded"
 
+    step "stop and start wait for the VM"
+    "$DEVVM" stop
+    assert_contains "$("$DEVVM" status)" "State:      shut off"
+    "$DEVVM" start
+    assert_eq "$("$DEVVM" ssh echo up)" up "ssh right after start"
+
     step "test: reset, arguments, login shell"
     "$DEVVM" ssh "touch leftover"
     out=$("$DEVVM" test 0 'a b' "c'd")
@@ -142,7 +161,11 @@ EOF
     assert_contains "$out" "leftover"
 
     step "destroy"
-    "$DEVVM" destroy -y
+    assert_contains "$("$DEVVM" destroy -y)" "Destroyed $name"
+    rc=0
+    "$DEVVM" status > "$TMP/gone.log" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "status of a destroyed VM succeeded"
+    assert_contains "$(cat "$TMP/gone.log")" "No VM $name"
     ! virsh -c qemu:///system dominfo "$name" > /dev/null 2>&1 || fail "$name still exists"
     [ ! -e "$pool/$name.qcow2" ] || fail "disk still exists"
 }
