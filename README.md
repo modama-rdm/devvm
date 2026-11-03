@@ -65,7 +65,7 @@ devvm wait        # wait for cloud-init and the project's provisioning
 devvm snapshot    # snapshot "clean" as a baseline
 devvm ssh         # log in
 devvm reset       # revert to "clean"
-devvm destroy     # remove VM, disk and snapshots
+devvm destroy     # remove VM, disk and snapshots; asks first, -y in scripts
 ```
 
 `devvm` without arguments lists all commands, including those of the project. The VM

@@ -49,11 +49,22 @@ if [ ! -f "$SITE_ENV" ] && [ -f "$OLD_SITE_ENV" ]; then
     SITE_ENV=$OLD_SITE_ENV
 fi
 
+# Ask a yes/no question; exits unless answered with y. Without a terminal there is no one
+# to ask, so fail loudly instead of reading EOF; HINT says how to skip the question.
+confirm() {
+    local prompt=$1 hint=${2:-} answer
+    if [ ! -t 0 ]; then
+        echo "$prompt: no terminal to confirm${hint:+; $hint}" >&2
+        exit 1
+    fi
+    read -rp "$prompt [y/N] " answer
+    [ "$answer" = y ] || { echo "Aborted" >&2; exit 1; }
+}
+
 cmd_setup() {
-    local pool pubkey default_key answer f
+    local pool pubkey default_key f
     if [ -f "$SITE_ENV" ]; then
-        read -rp "$SITE_ENV exists, overwrite? [y/N] " answer
-        [ "$answer" = y ] || exit 1
+        confirm "$SITE_ENV exists, overwrite?" "remove it first"
     fi
     echo "Directory for base images, VM disks and SSH host keys of all projects. Needs"
     echo "~100 GB per VM and must be traversable (x) by the libvirt-qemu user."
@@ -467,8 +478,7 @@ cmd_reset() {
 
 cmd_destroy() {
     if [ "${1:-}" != "-y" ]; then
-        read -rp "Remove VM $VM_NAME with disk $DISK and all snapshots? [y/N] " answer
-        [ "$answer" = y ] || exit 1
+        confirm "Remove VM $VM_NAME with disk $DISK and all snapshots?" "use destroy -y"
     fi
     virsh destroy "$VM_NAME" &>/dev/null || true
     virsh undefine "$VM_NAME" --snapshots-metadata --remove-all-storage
