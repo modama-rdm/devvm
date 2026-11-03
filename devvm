@@ -300,7 +300,9 @@ All commands act on the VM of this checkout, ${DEVVM_VM_NAME:-none without a bra
                     repository to the VM's checkout ~/${DEVVM_VM_REPO:-REPO}; origin/BRANCH
                     becomes branch BRANCH in the VM
   fetch             fetch the VM's branches into the host as ${DEVVM_VM_NAME:-VM}/*
-  setup-dev         copy the host's git identity and install Claude Code in the VM
+  setup-dev         copy the host's git identity and install Claude Code in the VM, with
+                    the kaizen plugin (uellue/skills) and the tools for terminal
+                    screenshots (xvfb, xterm, xdotool, imagemagick)
 EOF
     if [ -n "$PROJECT_USAGE" ]; then
         printf '\nCommands of this project (%s):\n%s\n' "$PROJECT_DIR/commands.sh" "$PROJECT_USAGE"

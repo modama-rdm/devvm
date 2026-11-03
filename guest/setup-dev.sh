@@ -1,5 +1,7 @@
 #!/bin/bash
-# Runs inside the VM (run by `devvm setup-dev`): git identity and Claude Code.
+# Runs inside the VM (run by `devvm setup-dev`): git identity, Claude Code, and the tools
+# of the kaizen:hallway-test skill for judging a terminal by eye (Xvfb, xterm, xdotool,
+# ImageMagick), and the kaizen plugin of the author's skills (github.com/uellue/skills).
 # Usage: setup-dev.sh GIT_USER_NAME GIT_USER_EMAIL [--claude-token-stdin]
 # With --claude-token-stdin, a Claude Code token (from `claude setup-token` on the host)
 # is read from stdin and exported as CLAUDE_CODE_OAUTH_TOKEN to the VM user's shells.
@@ -25,7 +27,25 @@ if [ "${3:-}" = --claude-token-stdin ]; then
     echo "Claude Code token installed in $token_file"
 fi
 
+# Debian packages; stdin from /dev/null, as stdin may carry the token above
+tools=(xvfb xterm xdotool imagemagick)
+missing=()
+for p in "${tools[@]}"; do
+    dpkg -s "$p" > /dev/null 2>&1 || missing+=("$p")
+done
+if [ ${#missing[@]} -gt 0 ]; then
+    sudo apt-get update -qq < /dev/null
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}" < /dev/null
+fi
+
 if [ ! -x "$HOME/.local/bin/claude" ]; then
     curl -fsSL https://claude.ai/install.sh | bash
 fi
-"$HOME/.local/bin/claude" --version
+claude=$HOME/.local/bin/claude
+"$claude" --version
+
+# Dieter Weber's personal skills, at user scope; skipped when already installed
+if ! "$claude" plugin list 2> /dev/null | grep -q 'kaizen@uellue'; then
+    "$claude" plugin marketplace add uellue/skills < /dev/null
+    "$claude" plugin install kaizen@uellue --scope user < /dev/null
+fi
