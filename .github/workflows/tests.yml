@@ -24,7 +24,9 @@ jobs:
         run: tests/run.sh lint unit
 
   e2e:
-    runs-on: ubuntu-24.04
+    # Live snapshots of a VM with a shared folder need a recent virtiofsd and QEMU
+    # (migration support of vhost-user); ubuntu-24.04's are too old
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -41,6 +43,9 @@ jobs:
           sudo apt-get install -y shellcheck python3-yaml libvirt-daemon-system libvirt-clients virtinst \
               qemu-system-x86 qemu-utils virtiofsd genisoimage
           sudo usermod -aG libvirt "$USER"
+          /usr/libexec/virtiofsd --version || /usr/lib/qemu/virtiofsd --version
+          qemu-system-x86_64 --version | head -1
+          virsh --version
           sudo systemctl start libvirtd
           sudo virsh net-start default || true
       - name: Pool for the VM disks
