@@ -282,6 +282,11 @@ All commands act on the VM of this checkout, ${DEVVM_VM_NAME:-none without a bra
   status            show VM state and snapshots
   start | stop      boot or shut down the VM
   snapshot [SNAP]   create snapshot SNAP of the VM (default: clean)
+  snapshot -u [SNAP]
+                    update SNAP (default: clean) to the VM's current state; creates it if missing
+  snapshot -l       list the snapshots with creation time and state
+  snapshot -d SNAP...
+                    delete the snapshots SNAP
   reset [SNAP]      revert the VM to snapshot SNAP (default: clean)
   test [--no-reset] [--snapshot SNAP] [--] [ARGS...]
                     run the project's tests in the VM: reset to SNAP (default: clean),
@@ -768,12 +773,62 @@ eject_cdroms() {
     done < <(virsh domblklist "$DEVVM_VM_NAME" --details | tail -n +3)
 }
 
+snapshot_exists() {
+    virsh snapshot-list "$DEVVM_VM_NAME" --name | grep -qxF -- "$1"
+}
+
+# Snapshot names are used as virsh arguments; refuse option-like ones such as --help
+check_snapshot_name() {
+    case "$1" in
+        -*) echo "Invalid snapshot name \"$1\" (see: $PROG snapshot --help)" >&2; exit 1 ;;
+    esac
+}
+
 cmd_snapshot() {
+    local update=0 snap name
+    case "${1:-}" in
+        -h|--help)
+            usage
+            return 0 ;;
+        -l|--list)
+            virsh snapshot-list "$DEVVM_VM_NAME"
+            return ;;
+        -d|--delete)
+            shift
+            [ $# -ge 1 ] || { echo "snapshot -d needs at least one snapshot name" >&2; exit 1; }
+            for name in "$@"; do
+                check_snapshot_name "$name"
+                snapshot_exists "$name" || { echo "No snapshot \"$name\"" >&2; exit 1; }
+            done
+            for name in "$@"; do
+                virsh snapshot-delete "$DEVVM_VM_NAME" --snapshotname "$name" > /dev/null
+                echo "Deleted snapshot $name"
+            done
+            return ;;
+        -u|--update)
+            update=1
+            shift ;;
+    esac
+    [ $# -le 1 ] || { echo "snapshot takes at most one name" >&2; exit 1; }
+    snap=${1:-clean}
+    check_snapshot_name "$snap"
+    if snapshot_exists "$snap"; then
+        [ "$update" = 1 ] || { echo "Snapshot \"$snap\" exists; use snapshot -u $snap to update it" >&2; exit 1; }
+    fi
     [ "$(virsh domstate "$DEVVM_VM_NAME")" = running ] && eject_cdroms
-    virsh snapshot-create-as "$DEVVM_VM_NAME" --name "${1:-clean}" --atomic
+    if snapshot_exists "$snap"; then
+        # libvirt cannot overwrite a snapshot: replace it. A failure of the second step
+        # leaves no snapshot of that name, so say so.
+        virsh snapshot-delete "$DEVVM_VM_NAME" --snapshotname "$snap" > /dev/null
+        virsh snapshot-create-as "$DEVVM_VM_NAME" --name "$snap" --atomic ||
+            { echo "Old snapshot \"$snap\" was deleted, but creating the new one failed" >&2; exit 1; }
+    else
+        virsh snapshot-create-as "$DEVVM_VM_NAME" --name "$snap" --atomic
+    fi
 }
 
 cmd_reset() {
+    check_snapshot_name "${1:-clean}"
     virsh snapshot-revert "$DEVVM_VM_NAME" --snapshotname "${1:-clean}" --running
     # The guest clock resumes at the time the snapshot was taken; NTP may take a while
     # (or be unreachable), so set it from the host
@@ -819,7 +874,7 @@ cmd_ls() {
         state=$(virsh domstate "$name")
         ip=$(vm_ip "$name")
         size=$(du -h "$DEVVM_POOL_DIR/$name.qcow2" 2>/dev/null | cut -f1 || true)
-        snaps=$(virsh snapshot-list "$name" --name | grep -c . || true)
+        snaps=$(virsh snapshot-list "$name" --name | grep . | paste -sd, - | sed 's/,/, /g' || true)
         mark=' '; [ "$name" = "$DEVVM_VM_NAME" ] && mark='*'
         printf '%s %-28s %-10s %-16s %6s  %s\n' "$mark" "$name" "$state" "${ip:--}" "${size:--}" "$snaps"
     done < <(virsh list --all --name | grep "$filter" | sort)
@@ -978,7 +1033,7 @@ case "${1:-}" in
     status) cmd_status ;;
     start) virsh start "$DEVVM_VM_NAME" ;;
     stop) virsh shutdown "$DEVVM_VM_NAME" ;;
-    snapshot) cmd_snapshot "${2:-}" ;;
+    snapshot) shift; cmd_snapshot "$@" ;;
     reset) cmd_reset "${2:-}" ;;
     destroy) shift; cmd_destroy "$@" ;;
     prune) cmd_prune ;;

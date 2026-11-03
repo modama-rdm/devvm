@@ -53,3 +53,16 @@ test_missing_site_settings() {
 }
 
 run_tests
+
+test_snapshot_rejects_option_like_names() {
+    need_libvirt_group
+    assert_fails "$DEVVM" snapshot --bogus
+    assert_contains "$(cat "$TMP/out")" "Invalid snapshot name"
+    assert_fails "$DEVVM" reset --bogus
+    assert_contains "$(cat "$TMP/out")" "Invalid snapshot name"
+}
+
+test_snapshot_help() {
+    need_libvirt_group
+    assert_contains "$("$DEVVM" snapshot --help 2>&1)" "snapshot -u"
+}
