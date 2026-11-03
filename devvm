@@ -269,8 +269,10 @@ All commands act on the VM of this checkout, ${DEVVM_VM_NAME:-none without a bra
   version           print devvm's version
   ls [-a]           list the VMs of this project, with -a all VMs on this host;
                     * marks the one of this checkout
-  create            download base image, create and start the VM; shares this checkout
-                    at $DEVVM_WORKSPACE_ROOT/<folder> unless DEVVM_SHARE_WORKSPACE=0, and DEVVM_MOUNTS
+  create [--no-wait]
+                    download base image, create and start the VM; shares this checkout
+                    at $DEVVM_WORKSPACE_ROOT/<folder> unless DEVVM_SHARE_WORKSPACE=0, and DEVVM_MOUNTS;
+                    then waits for it (as wait) and takes snapshot "clean", unless --no-wait
   wait              wait until cloud-init (and the project's provisioning) has finished
   ssh [CMD...]      log in to the VM or run a command there
   ip                print the VM's IP address
@@ -584,7 +586,33 @@ vm_workspace_host() {
         sed -n 's/.* host="\([^"]*\)".*/\1/p'
 }
 
+# What to do with a new VM, for the two uses: interactive development and test runs
+next_steps() {
+    local ws=$GUEST_WS
+    echo
+    echo "$DEVVM_VM_NAME is ready, with snapshot \"clean\" to return to. Next, depending on the use:"
+    echo "  Interactive development:"
+    if [ "$DEVVM_SHARE_WORKSPACE" != 1 ]; then
+        echo "    $PROG push               the branch checked out here, to ~/$DEVVM_VM_REPO in the VM"
+    fi
+    echo "    $PROG setup-dev          git identity from the host, install Claude Code"
+    echo "    $PROG snapshot dev       optional: a baseline that keeps Claude Code ($PROG reset dev)"
+    echo "    $PROG ssh                log in, then: claude"
+    echo "  Test runs:"
+    echo "    $PROG reset              before each run, back to \"clean\""
+    if [ "$DEVVM_SHARE_WORKSPACE" != 1 ]; then
+        echo "    $PROG push [REF]         the commit to test"
+    fi
+    echo "    $PROG ssh 'cd $ws && ...'   or a command in .devvm/commands.sh, see README"
+}
+
 cmd_create() {
+    local no_wait=
+    case "${1:-}" in
+        --no-wait) no_wait=1 ;;
+        "") ;;
+        *) echo "Unknown option for create: $1" >&2; exit 1 ;;
+    esac
     if virsh dominfo "$DEVVM_VM_NAME" &>/dev/null; then
         echo "VM $DEVVM_VM_NAME already exists" >&2
         exit 1
@@ -653,36 +681,71 @@ cmd_create() {
 
     local ip
     ip=$(require_ip)
-    echo "$DEVVM_VM_NAME is at $ip. Next: $PROG wait && $PROG snapshot"
+    echo "$DEVVM_VM_NAME is at $ip"
     for i in "${!FS_TAG[@]}"; do
         echo "  shares ${FS_SRC[i]} at ${FS_TGT[i]}${FS_RO[i]:+ (read-only)}"
     done
     for i in "${!VOL_NAME[@]}"; do
         echo "  volume ${VOL_NAME[i]} at ${VOL_TGT[i]}"
     done
+    if [ -n "$no_wait" ]; then
+        echo "Next: $PROG wait && $PROG snapshot"
+        return
+    fi
+    cmd_wait
+    cmd_snapshot clean
+    next_steps
 }
 
 cmd_wait() {
-    local err
+    local ip err='' start=$SECONDS rc=0
+    ip=$(require_ip)
+    echo "Waiting for SSH on $DEVVM_VM_NAME ($ip) ..."
+    # Probe without prompts: BatchMode, so that a passphrase prompt cannot block a retry
+    # loop. Permission denied means that sshd is up and checked the key, but the key
+    # needs interaction (a passphrase without ssh-agent, a security key); the rest
+    # then runs in one ordinary session that can prompt once.
     for _ in $(seq 100); do
-        err=$(vm_ssh -o ConnectTimeout=5 -o BatchMode=yes true 2>&1) && break
-        case "$err" in *"Host key verification failed"*|*"REMOTE HOST IDENTIFICATION"*)
-            echo "$err" >&2; exit 1 ;;   # not a timing problem, retrying will not help
+        if err=$(vm_ssh -o ConnectTimeout=5 -o BatchMode=yes true 2>&1); then
+            err=''
+            break
+        fi
+        case "$err" in
+            *"Host key verification failed"*|*"REMOTE HOST IDENTIFICATION"*)
+                echo "$err" >&2; exit 1 ;;   # not a timing problem, retrying will not help
+            *"Permission denied"*)
+                echo "SSH is up, but the key cannot be used without interaction (passphrase?)."
+                echo "Answer ssh's prompt below; loading the key with ssh-add avoids it."
+                err=''
+                break ;;
         esac
         if [ "$(virsh domstate "$DEVVM_VM_NAME")" = "shut off" ]; then
             echo "$DEVVM_VM_NAME is shut off" >&2; exit 1
         fi
         sleep 3
     done
-    [ -n "${err:-}" ] && echo "last error: $err" >&2
-    # A failed package install or provisioning script shows up as cloud-init error
-    if ! vm_ssh 'cloud-init status --wait > /dev/null'; then
-        echo "cloud-init reported an error; details: $PROG ssh sudo cloud-init status --long" >&2
-        vm_ssh 'sudo tail -n 30 /var/log/cloud-init-output.log' >&2 || true
+    if [ -n "$err" ]; then
+        echo "No SSH connection to $DEVVM_VM_NAME after $((SECONDS - start)) s; last error: $err" >&2
         exit 1
     fi
-    vm_ssh 'echo "cloud-init done"; if command -v docker > /dev/null; then
-        docker version --format "Docker {{.Server.Version}}" && docker compose version; fi'
+    echo "SSH is up after $((SECONDS - start)) s. Waiting for cloud-init: packages and the project's"
+    echo "provisioning, usually a few minutes. To watch: $PROG ssh tail -f /var/log/cloud-init-output.log"
+    # One session for the rest, so that a key with a passphrase is asked for once. A failed
+    # package install or provisioning script shows up as a cloud-init error (exit 3).
+    vm_ssh 'if ! cloud-init status --wait > /dev/null; then
+            sudo tail -n 30 /var/log/cloud-init-output.log >&2
+            exit 3
+        fi
+        if command -v docker > /dev/null; then
+            docker version --format "Docker {{.Server.Version}}" && docker compose version ||
+                echo "Docker is installed but not working" >&2
+        fi' || rc=$?
+    case $rc in
+        0) echo "cloud-init done after $((SECONDS - start)) s" ;;
+        3) echo "cloud-init reported an error, see above; details: $PROG ssh sudo cloud-init status --long" >&2
+           exit 1 ;;
+        *) echo "SSH to $DEVVM_VM_NAME failed (exit $rc)" >&2; exit 1 ;;
+    esac
     eject_cdroms
 }
 
@@ -837,11 +900,13 @@ cmd_setup_dev() {
     name=$(as_user git ${REPO_ROOT:+-C "$REPO_ROOT"} config user.name || true)
     email=$(as_user git ${REPO_ROOT:+-C "$REPO_ROOT"} config user.email || true)
     vm_run "$HERE/guest/setup-dev.sh" "$name" "$email"
+    echo "Next: $PROG ssh, then: claude. Optionally, to keep Claude Code across resets:"
+    echo "      $PROG snapshot dev, and later $PROG reset dev instead of reset"
 }
 
 case "${1:-}" in
     ls) shift; cmd_ls "$@" ;;
-    create) cmd_create ;;
+    create) shift; cmd_create "$@" ;;
     wait) cmd_wait ;;
     ssh) shift; vm_ssh "$@" ;;
     ip) require_ip ;;
