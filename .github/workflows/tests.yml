@@ -49,6 +49,7 @@ jobs:
       - name: e2e test
         env:
           DEVVM_E2E_POOL_DIR: /var/lib/libvirt/images/devvm
+          DEVVM_E2E_REQUIRED: "1"   # missing prerequisites fail the test instead of skipping
         # sg: the new group membership, which this shell does not have yet
         run: sg libvirt -c "tests/run.sh unit e2e"
       - name: Diagnostics on failure
