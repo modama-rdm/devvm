@@ -7,6 +7,9 @@
 #   all    all of them
 # Default: lint unit. A FILE runs one test file, e.g. tests/unit/mounts.sh.
 # From the host, in the project's VM reset to "clean": devvm test [SUITE|FILE...]
+# The GitHub workflow (.github/workflows/tests.yml) can be tried locally with act, see
+# "Developing devvm" in the README; act runs as root, so also run unit as a non-root
+# user outside the libvirt group, as the GitHub runner is.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 

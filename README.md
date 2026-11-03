@@ -365,5 +365,20 @@ stubs. The end-to-end tests need KVM and libvirt; they create a small VM of a th
 project, with a fresh key, in your `DEVVM_POOL_DIR` (or `DEVVM_E2E_POOL_DIR`), and
 remove it afterwards.
 
+CI (`.github/workflows/tests.yml`) runs lint and unit tests, and the e2e test on a
+runner with KVM. To try the workflow before pushing, use
+[act](https://github.com/nektos/act) (needs Docker; install a release binary and check
+its checksum):
+
+```
+act -j lint-unit -P ubuntu-24.04=catthehacker/ubuntu:act-24.04
+```
+
+Two limits. `act` runs as root, and devvm skips its libvirt-group check for root, but the
+GitHub runner is an ordinary user outside that group: to see what it sees, run the unit
+tests as such a user, e.g. `sudo -u nobody -H bash -c 'unset SUDO_USER SUDO_UID SUDO_GID;
+cd REPO && tests/run.sh unit'`. And the `e2e` job needs KVM and libvirt, so run it with
+`tests/run.sh e2e` in a devvm host (below), not in `act`.
+
 devvm is developed in its own VM: `.devvm/` makes the VM a devvm host with nested KVM.
 `devvm create` in this repository, then `devvm test [all|e2e|...]` runs the tests there.
