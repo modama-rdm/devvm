@@ -132,7 +132,10 @@ Mounts are set up when the VM is created; to change them, re-create it. The shar
 not support POSIX ACLs (`setfacl`) or `chattr`: libvirt starts virtiofsd without
 `--posix-acl`, and AppArmor does not allow another binary. Put what needs them on a
 volume. The guest memory is shared with virtiofsd, which libvirt sets up
-(`memoryBacking` memfd); live snapshots and `reset` work as without shares.
+(`memoryBacking` memfd); live snapshots and `reset` work as without shares, given a
+recent virtiofsd and QEMU: with older ones (Ubuntu 24.04's) QEMU refuses a live snapshot
+of a VM with a share ("vhost-user backend lacks VHOST_USER_PROTOCOL_F_LOG_SHMFD").
+Debian 13 and Ubuntu 26.04 work.
 
 With shared folders, the VM protects the host system, not the shared files: a
 `git clean -fdx` or `rm -rf` in the VM acts on the host checkout. Commit before letting
