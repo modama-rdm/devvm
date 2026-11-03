@@ -72,7 +72,9 @@ EOF
         rm -rf '$TMP'" EXIT
 
     step "create $name"
+    # tee would hide create's exit status: take it from PIPESTATUS
     "$DEVVM" create 2>&1 | tee "$TMP/create.log"
+    [ "${PIPESTATUS[0]}" -eq 0 ] || fail "devvm create failed"
     "$DEVVM" ls | grep -q "^\* $name *running" || fail "ls does not show $name running"
 
     step "the command create prints to watch cloud-init"
