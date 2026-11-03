@@ -212,6 +212,14 @@ if [ -z "${VM_NAME:-}" ]; then
         esac
     fi
 fi
+# The VM user gets the host user's ids, so that files in shared folders belong to the
+# same user on both sides. System ids (e.g. root) exist in the image already; the VM
+# user then gets the first regular ones.
+VM_UID=$(id -u "$USER_NAME")
+VM_GID=$(id -g "$USER_NAME")
+[ "$VM_UID" -ge 1000 ] || VM_UID=1000
+[ "$VM_GID" -ge 1000 ] || VM_GID=1000
+
 # The name is a libvirt domain, a file name stem, a hostname and an ssh alias
 [ -z "$VM_NAME" ] || [[ $VM_NAME =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "Invalid VM name: $VM_NAME" >&2; exit 1; }
 case "$POOL_DIR" in *[[:space:]]*|"") echo "POOL_DIR must be an absolute path without whitespace" >&2; exit 1 ;; esac
@@ -250,7 +258,8 @@ All commands act on the VM of this checkout, ${VM_NAME:-none without a branch}, 
   init              create .devvm/config.env for the project
   ls [-a]           list the VMs of this project, with -a all VMs on this host;
                     * marks the one of this checkout
-  create            download base image, create and start the VM
+  create            download base image, create and start the VM; shares this checkout
+                    at $WORKSPACE_ROOT/<folder> unless SHARE_WORKSPACE=0, and MOUNTS
   wait              wait until cloud-init (and the project's provisioning) has finished
   ssh [CMD...]      log in to the VM or run a command there
   ip                print the VM's IP address
@@ -261,6 +270,7 @@ All commands act on the VM of this checkout, ${VM_NAME:-none without a branch}, 
   destroy [-y]      remove the VM, its disk and snapshots (keeps base image and host key)
   prune             delete base images that no VM disk and no current setting uses
 
+  For VMs created with SHARE_WORKSPACE=0:
   push [REF]        push REF (default: the branch checked out here) from the host
                     repository to the VM's checkout ~/${VM_REPO:-REPO}; origin/BRANCH
                     becomes branch BRANCH in the VM
@@ -347,23 +357,199 @@ render() {
     local pubkey
     pubkey=$(head -1 "$SSH_PUBKEY_FILE" | sed "s/'/''/g; s/[|&\\\\]/\\\\&/g")
     sed -e "s|@VM_NAME@|$VM_NAME|g" -e "s|@VM_USER@|$VM_USER|g" \
+        -e "s|@VM_UID@|$VM_UID|g" -e "s|@VM_GID@|$VM_GID|g" \
         -e "s|@SSH_PUBKEY@|$pubkey|g" "$1"
 }
 
-# The parts of user-data that come from settings: packages, the project's provisioning
-# script and the host key. Appended to the template as further top-level keys.
+# Shared folders (virtiofs) and VM-local volumes, from SHARE_WORKSPACE and MOUNTS;
+# filled by plan_mounts, in mount order (parents before what is mounted into them)
+FS_TAG=() FS_SRC=() FS_TGT=() FS_RO=() VOL_NAME=() VOL_TGT=()
+# The checkout as seen in the VM ("containerWorkspaceFolder")
+GUEST_WS=
+# libvirt metadata namespace in which create records the shared workspace
+META_URI=https://devvm.invalid/1
+
+# Paths end up in fstab, libvirt XML and option strings: keep them simple
+check_path() {
+    case "$1" in
+        /*) ;;
+        *) echo "Not an absolute path: $1" >&2; exit 1 ;;
+    esac
+    case "$1" in
+        *[[:space:],\"\'\\\&\<\>]*)
+            echo "Unsupported characters (whitespace , \" ' \\ & < >) in path: $1" >&2; exit 1 ;;
+    esac
+}
+
+# The devcontainer variables in a mount string
+expand_vars() {
+    local s=$1 var val
+    # shellcheck disable=SC2016  # the ${...} are literal devcontainer variables
+    s=${s//'${localWorkspaceFolder}'/"$REPO_ROOT"}
+    # shellcheck disable=SC2016
+    s=${s//'${localWorkspaceFolderBasename}'/"$(basename "$REPO_ROOT")"}
+    # shellcheck disable=SC2016
+    s=${s//'${containerWorkspaceFolder}'/"$GUEST_WS"}
+    while [[ $s =~ \$\{localEnv:([A-Za-z_][A-Za-z0-9_]*)\} ]]; do
+        var=${BASH_REMATCH[1]}
+        if [ "$var" = HOME ]; then val=$USER_HOME; else val=${!var:-}; fi
+        s=${s//"\${localEnv:$var}"/"$val"}
+    done
+    echo "$s"
+}
+
+add_fs() {
+    check_path "$2"
+    check_path "$3"
+    FS_TAG+=("$1") FS_SRC+=("$2") FS_TGT+=("$3") FS_RO+=("$4")
+}
+
+plan_mounts() {
+    local specs=() spec kvs kv key val src tgt type ro n=0 common
+    GUEST_WS=/home/$VM_USER/${VM_REPO:-}
+    if [ "$SHARE_WORKSPACE" = 1 ]; then
+        require_repo
+        GUEST_WS=$WORKSPACE_ROOT/$(basename "$REPO_ROOT")
+        add_fs devvm-ws "$REPO_ROOT" "$GUEST_WS" ""
+        # A linked worktree's .git file points to the main repository's git directory by
+        # absolute host path; share that at the same path, so that git finds it
+        common=$(as_user git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)
+        case "$common/" in
+            "$REPO_ROOT"/*) ;;
+            *) add_fs devvm-git "$common" "$common" "" ;;
+        esac
+    fi
+    read -rd '' -a specs <<< "$MOUNTS" || true
+    for spec in "${specs[@]}"; do
+        src='' tgt='' type=bind ro=''
+        IFS=, read -ra kvs <<< "$spec"
+        for kv in "${kvs[@]}"; do
+            key=${kv%%=*} val=
+            [ "$key" = "$kv" ] || val=${kv#*=}
+            case $key in
+                source|src) src=$val ;;
+                target|destination|dst) tgt=$val ;;
+                type) type=$val ;;
+                readonly|ro)
+                    case $val in
+                        ""|true|1) ro=1 ;;
+                        false|0) ;;
+                        *) echo "Invalid $kv in mount: $spec" >&2; exit 1 ;;
+                    esac ;;
+                consistency) ;;   # Docker Desktop on macOS only
+                *) echo "Unsupported option $kv in mount: $spec" >&2; exit 1 ;;
+            esac
+        done
+        if [ -z "$src" ] || [ -z "$tgt" ]; then
+            echo "Mount needs source and target: $spec" >&2; exit 1
+        fi
+        tgt=$(expand_vars "$tgt")
+        case $tgt in
+            /*) ;;
+            *)
+                [ "$SHARE_WORKSPACE" = 1 ] ||
+                    { echo "Relative target needs SHARE_WORKSPACE=1: $spec" >&2; exit 1; }
+                tgt=$GUEST_WS/$tgt ;;
+        esac
+        tgt=$(realpath -m "$tgt")
+        case $type in
+            bind)
+                src=$(expand_vars "$src")
+                # shellcheck disable=SC2088  # a literal ~ in the mount string
+                case $src in
+                    "~"|"~/"*) src=$USER_HOME${src#\~} ;;
+                    /*) ;;
+                    *) require_repo; src=$REPO_ROOT/$src ;;
+                esac
+                [ -d "$src" ] || { echo "No folder $src for mount: $spec" >&2; exit 1; }
+                n=$((n + 1))
+                add_fs "devvm-m$n" "$(realpath "$src")" "$tgt" "$ro" ;;
+            volume)
+                [[ $src =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
+                    { echo "Invalid volume name $src in mount: $spec" >&2; exit 1; }
+                [ -z "$ro" ] || { echo "Volumes cannot be read-only: $spec" >&2; exit 1; }
+                check_path "$tgt"
+                VOL_NAME+=("$src") VOL_TGT+=("$tgt") ;;
+            *) echo "Unsupported type $type in mount: $spec" >&2; exit 1 ;;
+        esac
+    done
+}
+
+# Runs first in the new VM, as root: mounts, recorded in fstab for later boots. Mount
+# points are created as the VM user where possible, so that those inside a share
+# belong to the host user.
+guest_setup_script() {
+    local i
+    echo '#!/bin/bash'
+    echo '# Generated by devvm: shared folders, volumes and the login directory of the VM user'
+    echo 'set -euo pipefail'
+    echo "U=$(printf %q "$VM_USER")"
+    cat <<'EOS'
+mkpoint() { runuser -u "$U" -- mkdir -p "$1" 2> /dev/null || mkdir -p "$1"; }
+mount_fs() {   # TAG TARGET [ro]
+    mkpoint "$2"
+    echo "$1 $2 virtiofs defaults,nofail${3:+,ro} 0 0" >> /etc/fstab
+    mount "$2"
+}
+mount_vol() {  # NAME TARGET
+    install -d -o "$U" -g "$(id -g "$U")" "/var/lib/devvm/volumes/$1"
+    mkpoint "$2"
+    echo "/var/lib/devvm/volumes/$1 $2 none bind,nofail 0 0" >> /etc/fstab
+    mount "$2"
+}
+EOS
+    for i in "${!FS_TAG[@]}"; do
+        echo "mount_fs $(printf '%q ' "${FS_TAG[i]}" "${FS_TGT[i]}") ${FS_RO[i]:+ro}"
+    done
+    for i in "${!VOL_NAME[@]}"; do
+        echo "mount_vol $(printf '%q ' "${VOL_NAME[i]}" "${VOL_TGT[i]}")"
+    done
+    if [ "$SHARE_WORKSPACE" = 1 ] && [ "$GUEST_WS" != "$REPO_ROOT" ]; then
+        # The repository records a linked worktree by its host path; without that path,
+        # git in the VM considers the worktree prunable
+        echo "if [ ! -e $(printf %q "$REPO_ROOT") ]; then"
+        echo "    mkpoint $(printf %q "$(dirname "$REPO_ROOT")")"
+        echo "    ln -s $(printf '%q ' "$GUEST_WS" "$REPO_ROOT")"
+        echo "fi"
+    fi
+    echo "systemctl daemon-reload"
+    # Login shells start in the workspace, like a devcontainer terminal
+    echo "echo $(printf %q "if [ \"\$PWD\" = \"\$HOME\" ] && [ -d $GUEST_WS ]; then cd $GUEST_WS; fi") > /etc/profile.d/devvm-workspace.sh"
+    # The host's git identity, as devcontainers copy .gitconfig
+    local key val cmd=''
+    for key in user.name user.email; do
+        val=$(as_user git ${REPO_ROOT:+-C "$REPO_ROOT"} config "$key" || true)
+        [ -z "$val" ] || cmd+="git config --global $key $(printf %q "$val") && "
+    done
+    if [ "$SHARE_WORKSPACE" = 1 ]; then
+        # git gc would otherwise prune the host's other worktrees, whose folders the VM
+        # does not see, from the shared repository
+        cmd+="git config --global gc.worktreePruneExpire never && "
+    fi
+    echo "if command -v git > /dev/null; then su - \"\$U\" -c $(printf %q "${cmd}true"); fi"
+}
+
+# The parts of user-data that come from settings: packages, mounts, the project's
+# provisioning script and the host key. Appended to the template as top-level keys.
 user_data_extra() {
     local pkg
     [[ $PACKAGES =~ ^[A-Za-z0-9.+:\ -]*$ ]] || { echo "Invalid PACKAGES: $PACKAGES" >&2; exit 1; }
     echo "packages:"
     for pkg in $PACKAGES; do echo "  - $pkg"; done
     echo "runcmd:"
+    echo "  - [/usr/local/lib/devvm/setup.sh]"
     echo "  - if command -v docker > /dev/null; then systemctl enable --now docker; fi"
     if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/provision.sh" ]; then
         # Runs once, as the VM user, after the packages are installed; a failure makes
         # cloud-init, and with it `wait`, report an error
         echo "  - [su, '-', '$VM_USER', '-c', '/usr/local/lib/devvm/provision.sh']"
-        echo "write_files:"
+    fi
+    echo "write_files:"
+    echo "  - path: /usr/local/lib/devvm/setup.sh"
+    echo "    permissions: '0755'"
+    echo "    encoding: b64"
+    echo "    content: $(guest_setup_script | base64 -w0)"
+    if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/provision.sh" ]; then
         echo "  - path: /usr/local/lib/devvm/provision.sh"
         echo "    permissions: '0755'"
         echo "    encoding: b64"
@@ -376,12 +562,38 @@ user_data_extra() {
     echo "  ed25519_public: $(cat "$HOSTKEY.pub")"
 }
 
+# The workspace in the VM if create shared the checkout; empty for a VM that gets
+# commits by push
+vm_workspace() {
+    virsh metadata "$VM_NAME" --uri "$META_URI" 2> /dev/null |
+        sed -n 's/.* guest="\([^"]*\)".*/\1/p'
+}
+vm_workspace_host() {
+    virsh metadata "$VM_NAME" --uri "$META_URI" 2> /dev/null |
+        sed -n 's/.* host="\([^"]*\)".*/\1/p'
+}
+
 cmd_create() {
     if virsh dominfo "$VM_NAME" &>/dev/null; then
         echo "VM $VM_NAME already exists" >&2
         exit 1
     fi
     [ -r "$SSH_PUBKEY_FILE" ] || { echo "Cannot read $SSH_PUBKEY_FILE" >&2; exit 1; }
+    plan_mounts
+    local fs_opts=() i
+    if [ ${#FS_TAG[@]} -gt 0 ]; then
+        # libvirt starts virtiofsd per share; it looks in these places
+        if [ ! -x /usr/libexec/virtiofsd ] && [ ! -x /usr/lib/qemu/virtiofsd ]; then
+            echo "Shared folders need virtiofsd on the host (Debian: apt install virtiofsd)," >&2
+            echo "or set SHARE_WORKSPACE=0 and no bind MOUNTS" >&2
+            exit 1
+        fi
+        # vhost-user devices such as virtiofs need the guest memory shared with virtiofsd
+        fs_opts+=(--memorybacking "source.type=memfd,access.mode=shared")
+        for i in "${!FS_TAG[@]}"; do
+            fs_opts+=(--filesystem "type=mount,accessmode=passthrough,driver.type=virtiofs,source.dir=${FS_SRC[i]},target.dir=${FS_TAG[i]}${FS_RO[i]:+,readonly=yes}")
+        done
+    fi
     as_user mkdir -p "$BASE_DIR"
 
     if [ ! -f "$BASE_DIR/$IMAGE_FILE" ]; then
@@ -421,11 +633,22 @@ cmd_create() {
         --network network="$NETWORK",model=virtio \
         --cloud-init "user-data=$ci_dir/user-data,meta-data=$ci_dir/meta-data,disable=on" \
         --graphics none --noautoconsole --import \
+        "${fs_opts[@]}" \
         --video virtio  # without any display device the Debian kernel resets right after GRUB
+    if [ "$SHARE_WORKSPACE" = 1 ]; then
+        virsh metadata "$VM_NAME" --uri "$META_URI" --key devvm --live --config \
+            --set "<workspace host=\"$REPO_ROOT\" guest=\"$GUEST_WS\"/>" > /dev/null
+    fi
 
     local ip
     ip=$(require_ip)
     echo "$VM_NAME is at $ip. Next: $PROG wait && $PROG snapshot"
+    for i in "${!FS_TAG[@]}"; do
+        echo "  shares ${FS_SRC[i]} at ${FS_TGT[i]}${FS_RO[i]:+ (read-only)}"
+    done
+    for i in "${!VOL_NAME[@]}"; do
+        echo "  volume ${VOL_NAME[i]} at ${VOL_TGT[i]}"
+    done
 }
 
 cmd_wait() {
@@ -474,6 +697,18 @@ cmd_reset() {
     # (or be unreachable), so set it from the host
     vm_ssh -o ConnectTimeout=10 "sudo date -u -s @$(date -u +%s) > /dev/null" ||
         echo "Could not set the VM's clock, it may lag behind" >&2
+}
+
+cmd_status() {
+    local ws
+    virsh dominfo "$VM_NAME"
+    ws=$(vm_workspace)
+    if [ -n "$ws" ]; then
+        echo "Workspace:      $(vm_workspace_host) at $ws"
+    else
+        echo "Workspace:      ~/$VM_REPO, by push and fetch"
+    fi
+    virsh snapshot-list "$VM_NAME"
 }
 
 cmd_destroy() {
@@ -542,9 +777,19 @@ current_branch() {
     echo "$b"
 }
 
+# push and fetch are for VMs without a shared checkout
+require_unshared() {
+    local ws
+    ws=$(vm_workspace)
+    [ -z "$ws" ] && return
+    echo "$VM_NAME shares $(vm_workspace_host) at $ws, there is nothing to $1" >&2
+    exit 1
+}
+
 cmd_push() {
     local ref=${1:-} branch ip new b r
     require_repo
+    require_unshared push
     [ -n "$ref" ] || ref=$(current_branch)
     branch=${ref#origin/}
     as_user git -C "$REPO_ROOT" check-ref-format --branch "$branch" > /dev/null
@@ -571,6 +816,7 @@ cmd_push() {
 cmd_fetch() {
     local ip
     require_repo
+    require_unshared fetch
     ip=$(require_ip)
     vm_git fetch "$VM_USER@$ip:$VM_REPO" "+refs/heads/*:refs/remotes/$VM_NAME/*"
 }
@@ -588,7 +834,7 @@ case "${1:-}" in
     wait) cmd_wait ;;
     ssh) shift; vm_ssh "$@" ;;
     ip) require_ip ;;
-    status) virsh dominfo "$VM_NAME"; virsh snapshot-list "$VM_NAME" ;;
+    status) cmd_status ;;
     start) virsh start "$VM_NAME" ;;
     stop) virsh shutdown "$VM_NAME" ;;
     snapshot) cmd_snapshot "${2:-}" ;;

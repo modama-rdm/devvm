@@ -1,12 +1,15 @@
 # devvm
 
 Disposable libvirt/KVM virtual machines for development and tests, one per git branch
-or worktree. For work that should not touch the host: services that need Docker
+or worktree. Like a devcontainer, but a whole machine: for Docker Compose orchestration
 (membership in the host's `docker` group is effectively root), privileged containers,
-system-wide installs, or a coding agent that should be free to do all of that.
+kernel and system settings, system-wide installs, or a coding agent that should be free
+to do all of that, where its mistakes do not hit the host system.
 
-The VMs run Debian 13 with Docker. The repository is pushed into the VM from the host
-repository; no host folders or credentials are shared with it.
+The VMs run Debian 13 with Docker. As in a devcontainer, the checkout is shared into
+the VM read-write, at `/workspaces/<folder name>`; further host folders and VM-local
+volumes can be added. Alternatively, a VM gets commits pushed from the host repository
+and shares nothing with the host. No host credentials are passed to the VM.
 
 `devvm` acts on the git repository of the current directory, the *project*. A project
 can carry its own settings, provisioning and commands in a `.devvm/` folder, see
@@ -15,8 +18,8 @@ one project.
 
 ## Prerequisites
 
-- KVM, libvirt, `virt-install` and `qemu-img` on the host
-  (Debian: `apt install qemu-system-x86 libvirt-daemon-system virtinst`)
+- KVM, libvirt, `virt-install` and `qemu-img` on the host, and `virtiofsd` for shared
+  folders (Debian: `apt install qemu-system-x86 libvirt-daemon-system virtinst virtiofsd`)
 - Membership in the `libvirt` group, so that `devvm` needs no `sudo`:
   `sudo usermod -aG libvirt $USER`, then log in again. `devvm setup` checks
   this and prints the command if it is missing. Running `devvm` with `sudo`
@@ -73,6 +76,52 @@ sits on libvirt's NAT network. Ports are reachable from the host at the VM's add
 (`devvm ip`), or via SSH port forwarding (`devvm ssh -L 8080:localhost:8080`).
 
 `reset` also sets the VM's clock, which otherwise resumes at the time of the snapshot.
+It reverts the VM's disk, including volumes, but not shared folders: they are the host's
+files.
+
+## Shared folders
+
+By default (`SHARE_WORKSPACE=1`), `create` shares the checkout of the current
+directory with the VM, read-write, at `WORKSPACE_ROOT/<folder name>`
+(`/workspaces/...`). Login shells start there. The VM user has the uid and gid of the
+host user, so files keep their owner on both sides; files that containers create as
+root or other users keep those owners on the host, as with Docker on the host. Commits
+made in the VM are commits in the host repository, and `push`/`fetch` are not needed.
+
+A linked worktree's `.git` file points to the main repository's git directory by its
+absolute host path, so that directory is shared as well, at that path. git in the VM is
+set up not to prune the other worktrees of the repository, whose folders it does not
+see (`gc.worktreePruneExpire=never`); avoid `git worktree prune` in the VM.
+
+Further mounts are given in `MOUNTS`, in the syntax of devcontainer's `mounts`,
+separated by whitespace or newlines:
+
+```
+MOUNTS='
+source=${localEnv:HOME}/datasets,target=/data,readonly
+source=build,target=build,type=volume
+'
+```
+
+- `type=bind` (default): a host folder, shared with virtiofs; `readonly` is enforced
+  by the host. A relative source is relative to the checkout.
+- `type=volume`: a folder on the VM's disk, named by `source`, mounted at the target.
+  Over subfolders of the workspace, volumes keep build output, caches and container
+  data in the VM: faster, not mixed with the host's builds, and with full file system
+  semantics.
+- A relative target is relative to the workspace in the VM. `${localWorkspaceFolder}`,
+  `${localWorkspaceFolderBasename}`, `${containerWorkspaceFolder}` and
+  `${localEnv:VAR}` are substituted; use single quotes in `config.env`.
+
+Mounts are set up when the VM is created; to change them, re-create it. The share does
+not support POSIX ACLs (`setfacl`) or `chattr`: libvirt starts virtiofsd without
+`--posix-acl`, and AppArmor does not allow another binary. Put what needs them on a
+volume. The guest memory is shared with virtiofsd, which libvirt sets up
+(`memoryBacking` memfd); live snapshots and `reset` work as without shares.
+
+With shared folders, the VM protects the host system, not the shared files: a
+`git clean -fdx` or `rm -rf` in the VM acts on the host checkout. Commit before letting
+an agent loose, or give it a worktree of its own.
 
 ## One VM per branch or worktree
 
@@ -81,13 +130,12 @@ than letters and digits become `-`, so `feature/x` gives `myproject-feature-x`; 
 detached HEAD pass `-n`). `VM_PREFIX` defaults to the repository name and a `-`.
 Everything is keyed on that name: the disk and snapshots, the SSH host key file, the
 `<name>/*` refs that `fetch` creates on the host. So to work on two things in parallel,
-give each its own worktree and run `devvm` from there:
+give each its own worktree and run `devvm` from there; each VM shares its worktree:
 
 ```
 git worktree add -b feature-a ../myproject-feature-a origin/master
 cd ../myproject-feature-a
 devvm create && devvm wait && devvm snapshot   # VM myproject-feature-a
-devvm push
 ```
 
 The VMs have different addresses on the NAT network, so the published ports of their
@@ -96,11 +144,12 @@ the environment changes the default, for instance for a long-lived test VM that 
 tied to a branch. `devvm destroy` removes a VM when its branch is done; the base image
 is shared and stays.
 
-## Getting the code into the VM, and changes back out
+## Without a shared checkout: push and fetch
 
-The VM has no credentials for the upstream repository. Instead, the host repository
-pushes to and fetches from the checkout `~/<VM_REPO>` in the VM over SSH (`VM_REPO`
-defaults to the repository name):
+A VM created with `SHARE_WORKSPACE=0` shares no folders with the host (unless `MOUNTS`
+lists some), for instance a test VM on a fixed commit. The host repository pushes to
+and fetches from the checkout `~/<VM_REPO>` in the VM over SSH (`VM_REPO` defaults to
+the repository name):
 
 ```
 devvm push                        # the branch checked out here -> same branch in the VM
@@ -121,29 +170,29 @@ key in `POOL_DIR` and hands it to cloud-init, and all connections check against 
 re-created under the same name has the same identity; delete `POOL_DIR/<vm>.hostkey*`
 to rotate it.
 
-Why not SSH agent forwarding (`ssh -A`)? While a forwarded session is open, every
-process of the VM user can use the agent socket, including a Claude Code session in
-another terminal, and with it push anywhere your key may push. Routing commits through
-the host keeps the decision about what reaches upstream with you.
+Why not SSH agent forwarding (`ssh -A`), in either mode? While a forwarded session is
+open, every process of the VM user can use the agent socket, including a Claude Code
+session in another terminal, and with it push anywhere your key may push. Pushing
+upstream from the host keeps the decision about what reaches upstream with you.
 
 ## Development with Claude Code
 
 ```
+git worktree add -b my-feature ../myproject-my-feature
+cd ../myproject-my-feature
 devvm create && devvm wait && devvm snapshot
-devvm push                        # the branch of this worktree
 devvm setup-dev                   # git name/email from the host, installs Claude Code
-devvm ssh                         # then: cd <repo> && claude
+devvm ssh                         # starts in the workspace; then: claude
 ```
 
 `setup-dev` installs Claude Code with the official installer
 (`https://claude.ai/install.sh`) into `~/.local/bin`. Log in on the first start of
-`claude` in the VM; that login is stored in the VM only. Create a branch in the VM,
-let Claude work and commit there, then use `fetch` and push from the host as above.
+`claude` in the VM; that login is stored in the VM only. Claude's commits appear in the
+worktree on the host right away; review them there and push upstream from the host.
 
 The VM user may use Docker and `sudo` without a password, so Claude can build and run
-things freely inside the VM. Use `devvm reset` to return to the clean snapshot if
-something goes wrong; this also discards the checkout, so fetch anything worth keeping
-first.
+things freely inside the VM. Use `devvm reset` to return the VM to the clean snapshot
+if something goes wrong; the shared worktree keeps its state, which git can restore.
 
 ## Project configuration
 
@@ -170,6 +219,7 @@ project. `devvm init` creates a starting `config.env`. All files are optional:
   |---|---|
   | `vm_run SCRIPT [ARGS...]` | run a local script in the VM (passed as an argument, stdin stays free) |
   | `vm_ssh [ARGS...]` | ssh to the VM |
+  | `vm_workspace` | the shared checkout's path in the VM; empty for a VM with `SHARE_WORKSPACE=0` |
   | `vm_git ARGS...` | git in the host repository with SSH set up for the VM |
   | `cmd_push [REF]`, `cmd_fetch` | as the commands |
   | `current_branch` | the branch checked out on the host, fails on a detached HEAD |
@@ -189,3 +239,6 @@ devvm started in the data management system ("modama") repository. Its site sett
 moved from `~/.config/modama-devvm/site.env` to `~/.config/devvm/site.env`; the old
 file is still read, with a note, until you move it. Existing VMs, their pool and host
 keys keep working.
+
+New VMs share the checkout by default. VMs created before that share nothing and keep
+working with `push` and `fetch`; set `SHARE_WORKSPACE=0` to create more of that kind.
