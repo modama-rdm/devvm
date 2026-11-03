@@ -1,0 +1,58 @@
+# devvm's tests on GitHub: lint and unit tests always; the e2e test (real nested VMs)
+# on a runner with KVM. See tests/run.sh.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck python3-yaml
+      - name: Lint and unit tests
+        # Tests that need libvirt skip here; the e2e job runs them all
+        run: tests/run.sh lint unit
+
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+              sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - name: Install libvirt and friends
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck python3-yaml libvirt-daemon-system libvirt-clients virtinst \
+              qemu-system-x86 qemu-utils virtiofsd genisoimage
+          sudo usermod -aG libvirt "$USER"
+          sudo systemctl start libvirtd
+          sudo virsh net-start default || true
+      - name: Pool for the VM disks
+        run: |
+          sudo install -d -o "$USER" -g "$(id -gn)" -m 0751 /var/lib/libvirt/images/devvm
+      - name: e2e test
+        env:
+          DEVVM_E2E_POOL_DIR: /var/lib/libvirt/images/devvm
+        # sg: the new group membership, which this shell does not have yet
+        run: sg libvirt -c "tests/run.sh unit e2e"
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          sudo virsh list --all || true
+          sudo journalctl -u libvirtd --no-pager -n 100 || true
