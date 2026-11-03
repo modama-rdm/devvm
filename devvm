@@ -899,7 +899,21 @@ cmd_setup_dev() {
     local name email
     name=$(as_user git ${REPO_ROOT:+-C "$REPO_ROOT"} config user.name || true)
     email=$(as_user git ${REPO_ROOT:+-C "$REPO_ROOT"} config user.email || true)
-    vm_run "$HERE/guest/setup-dev.sh" "$name" "$email"
+    if [ -z "${DEVVM_CLAUDE_TOKEN_FILE:-}" ]; then
+        vm_run "$HERE/guest/setup-dev.sh" "$name" "$email"
+        echo "Log in on the first start of claude in the VM, or let setup-dev pass a token,"
+        echo "see DEVVM_CLAUDE_TOKEN_FILE in the README."
+    else
+        as_user test -r "$DEVVM_CLAUDE_TOKEN_FILE" ||
+            { echo "Cannot read DEVVM_CLAUDE_TOKEN_FILE $DEVVM_CLAUDE_TOKEN_FILE" >&2; exit 1; }
+        case $(stat -c %a "$DEVVM_CLAUDE_TOKEN_FILE") in
+            *00) ;;
+            *) echo "Warning: $DEVVM_CLAUDE_TOKEN_FILE is readable by others; chmod 600 it" >&2 ;;
+        esac
+        # On stdin, not as an argument: arguments show up in process listings
+        as_user cat "$DEVVM_CLAUDE_TOKEN_FILE" |
+            vm_run "$HERE/guest/setup-dev.sh" "$name" "$email" --claude-token-stdin
+    fi
     echo "Next: $PROG ssh, then: claude. Optionally, to keep Claude Code across resets:"
     echo "      $PROG snapshot dev, and later $PROG reset dev instead of reset"
 }

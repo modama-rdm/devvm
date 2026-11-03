@@ -9,7 +9,8 @@ to do all of that, where its mistakes do not hit the host system.
 The VMs run Debian 13 with Docker. As in a devcontainer, the checkout is shared into
 the VM read-write, at `/workspaces/<folder name>`; further host folders and VM-local
 volumes can be added. Alternatively, a VM gets commits pushed from the host repository
-and shares nothing with the host. No host credentials are passed to the VM.
+and shares nothing with the host. No host credentials are passed to the VM, except a
+Claude Code token if you opt in (see [Development with Claude Code](#development-with-claude-code)).
 
 `devvm` acts on the git repository of the current directory, the *project*. A project
 can carry its own settings, provisioning and commands in a `.devvm/` folder, see
@@ -199,6 +200,24 @@ devvm ssh                         # starts in the workspace; then: claude
 (`https://claude.ai/install.sh`) into `~/.local/bin`. Log in on the first start of
 `claude` in the VM; that login is stored in the VM only. Claude's commits appear in the
 worktree on the host right away; review them there and push upstream from the host.
+
+To skip the login in every new VM, let `setup-dev` pass a token. Create one on the host
+with `claude setup-token` (it needs a Claude subscription and is valid for a long time),
+save it in a file only you can read, and name that file in `~/.config/devvm/site.env`:
+
+```
+claude setup-token                        # prints the token
+(umask 077; cat > ~/.config/devvm/claude-token)   # paste it, then Ctrl-D
+echo "DEVVM_CLAUDE_TOKEN_FILE=$HOME/.config/devvm/claude-token" >> ~/.config/devvm/site.env
+```
+
+`setup-dev` sends the token over SSH's stdin, stores it in the VM as
+`~/.config/devvm/claude-oauth-token` and exports it as `CLAUDE_CODE_OAUTH_TOKEN` from
+`~/.bashrc`. Everything that runs as the VM user, including Claude itself and what it
+starts, can read the token and use your Claude account with it, also while the VM
+holds it in snapshots; it cannot use your host's SSH keys or upstream repositories. Use
+a token of its own for devvm, so that you can revoke it separately. Your own login on
+the host is not copied: host and VM would then share one session.
 
 The VM user may use Docker and `sudo` without a password, so Claude can build and run
 things freely inside the VM. Use `devvm reset dev` (or `devvm reset` for the clean
