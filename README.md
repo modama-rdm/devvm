@@ -49,12 +49,19 @@ environment. They are read in this order, later ones win:
 
 1. `defaults.env` next to `devvm`: generic defaults (image, sizing, network,
    packages)
-2. `.devvm/config.env` of the project, if present
-3. `~/.config/devvm/site.env` of the invoking user, for all projects:
-   `DEVVM_POOL_DIR` for images and disks, and `DEVVM_SSH_PUBKEY_FILE`, the key that
-   may log in. Create it once: `devvm setup`
+2. `~/.config/devvm/site.env` of the invoking user, for all projects:
+   `DEVVM_POOL_DIR` for images and disks, `DEVVM_SSH_PUBKEY_FILE`, the key that may
+   log in, and the site's limits (below). Create it once: `devvm setup`
+3. `.devvm/config.env` of the project, if present
 4. the environment, per command: `DEVVM_RAM_MB=32768 devvm create`. Under `sudo`, pass
    them after `sudo`: `sudo DEVVM_RAM_MB=32768 devvm create`.
+
+A project can thus override the site's settings, and a command the project's. The
+exception are the site's limits: `DEVVM_MAX_VCPUS`, `DEVVM_MAX_RAM_MB` and
+`DEVVM_MAX_DISK_GB` in `site.env` (or the environment) cap the size of a VM, to keep
+the host from running out of resources. `create` refuses a larger VM and says which
+limit it exceeds; a project's `config.env` cannot raise them. By default there is no
+limit. `create` prints the size of the VM it creates.
 
 `DEVVM_POOL_DIR` needs about 100 GB of free space per VM, must be writable by you and
 traversable by the `libvirt-qemu` user; `setup` creates it or tells you how. The Debian
@@ -90,6 +97,11 @@ refused), `snapshot -u NAME` brings an existing one up to the VM's current state
 `snapshot -l` lists them with creation time and state, `snapshot -d NAME...` deletes
 them. `devvm ls` shows the snapshot names per VM.
 
+`start` boots a stopped VM and waits until SSH answers; `stop` shuts it down and waits
+until it is off. `status` shows state, IP, size, workspace and snapshots (`-v` adds
+libvirt's details). `devvm --help` prints the commands. Commands that take no
+arguments refuse them, and commands on a VM that does not exist say so.
+
 `reset` also sets the VM's clock, which otherwise resumes at the time of the snapshot.
 It reverts the VM's disk, including volumes, but not shared folders: they are the host's
 files.
@@ -98,7 +110,9 @@ files.
 
 By default (`DEVVM_SHARE_WORKSPACE=1`), `create` shares the checkout of the current
 directory with the VM, read-write, at `DEVVM_WORKSPACE_ROOT/<folder name>`
-(`/workspaces/...`). Login shells start there. The VM user has the uid and gid of the
+(`/workspaces/...`). Interactive login shells (`devvm ssh` without a command) start
+there; `devvm ssh CMD` is plain `ssh`: no login shell, so it starts in the home
+directory and without `~/.local/bin` on the `PATH`. The VM user has the uid and gid of the
 host user, so files keep their owner on both sides; files that containers create as
 root or other users keep those owners on the host, as with Docker on the host. Commits
 made in the VM are commits in the host repository, and `push`/`fetch` are not needed.
@@ -124,6 +138,9 @@ source=build,target=build,type=volume
   Over subfolders of the workspace, volumes keep build output, caches and container
   data in the VM: faster, not mixed with the host's builds, and with full file system
   semantics.
+- A volume over a subfolder of the workspace needs its mount point in the workspace:
+  with a shared checkout, `create` leaves an empty folder of that name in the checkout
+  on the host.
 - A relative target is relative to the workspace in the VM. `${localWorkspaceFolder}`,
   `${localWorkspaceFolderBasename}`, `${containerWorkspaceFolder}` and
   `${localEnv:VAR}` are substituted; use single quotes in `config.env`.
@@ -253,9 +270,13 @@ devvm test --snapshot dev ...     # from another snapshot
 devvm test --no-reset -- --x      # after --, devvm's own options go to the tests
 ```
 
+For a VM without a shared checkout, `test` always pushes the branch first, also with
+`--no-reset`, so that the tests run the code as it is on the host; a rejected push stops
+the run.
+
 `DEVVM_TEST_COMMAND` is a shell command; it runs in the checkout in the VM, in a login
-shell, so the `PATH` is that of `devvm ssh` (e.g. with `~/.local/bin` from
-provisioning). `devvm test` exits with the command's status, for use in scripts and CI.
+shell, so the `PATH` is that of an interactive `devvm ssh` (e.g. with `~/.local/bin`
+from provisioning), unlike `devvm ssh CMD`. `devvm test` exits with the command's status, for use in scripts and CI.
 
 With a shared checkout, the tests see the working tree of the host, uncommitted changes
 included. In a VM created with `DEVVM_SHARE_WORKSPACE=0`, `devvm test` first pushes the

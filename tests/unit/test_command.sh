@@ -21,6 +21,7 @@ EOF
 stub_vm() {
     WS=$TMP/ws
     write_run_sh "$WS"
+    require_vm() { :; }
     cmd_reset() { echo "reset $*" >> "$TMP/calls"; }
     cmd_push() { echo "push $*" >> "$TMP/calls"; }
     vm_workspace() { echo "$WS"; }

@@ -2,8 +2,9 @@
 # devvm: disposable libvirt/KVM development VMs, one per git branch or worktree.
 #
 # Acts on the git repository of the current directory (the "project"). Settings, each
-# overriding the previous: defaults.env next to this script < the project's
-# .devvm/config.env < ~/.config/devvm/site.env < environment. A project can add
+# overriding the previous: defaults.env next to this script < ~/.config/devvm/site.env
+# < the project's .devvm/config.env < environment. The site's DEVVM_MAX_* limits are
+# the exception: a project cannot raise them. A project can add
 # provisioning (.devvm/provision.sh) and commands (.devvm/commands.sh). See README.md.
 set -euo pipefail
 
@@ -55,6 +56,13 @@ confirm() {
     [ "$answer" = y ] || { echo "Aborted" >&2; exit 1; }
 }
 
+# Commands without arguments say so, instead of ignoring what was typed
+no_args() {
+    local cmd=$1
+    shift
+    [ $# -eq 0 ] || { echo "$cmd takes no arguments, got: $* (see: $PROG)" >&2; exit 1; }
+}
+
 cmd_setup() {
     local pool pubkey default_key f
     if [ -f "$SITE_ENV" ]; then
@@ -81,9 +89,10 @@ cmd_setup() {
     as_user mkdir -p "$(dirname "$SITE_ENV")"
     as_user tee "$SITE_ENV" > /dev/null <<EOF
 # Site-specific settings for devvm, written by \`devvm setup\` on $(date -I).
-# They apply to all projects. Generic defaults are in defaults.env next to devvm,
-# project settings in .devvm/config.env of each project; any variable can be
-# overridden per command in the environment, e.g. DEVVM_RAM_MB=32768 devvm create
+# They apply to all projects. Generic defaults are in defaults.env next to devvm; this
+# file overrides them, a project's .devvm/config.env overrides this file, and any
+# variable can be overridden per command in the environment, e.g.
+# DEVVM_RAM_MB=32768 devvm create
 
 # Directory for base images, VM disks and SSH host keys (~100 GB per VM, must be
 # traversable by the libvirt-qemu user)
@@ -91,6 +100,12 @@ DEVVM_POOL_DIR=$pool
 
 # Public key that is authorized to log in to the VMs
 DEVVM_SSH_PUBKEY_FILE=$pubkey
+
+# Upper limits per VM, to keep the host from running out of resources; \`create\`
+# refuses a larger VM, and a project's config.env cannot raise them. Empty: no limit.
+#DEVVM_MAX_VCPUS=8
+#DEVVM_MAX_RAM_MB=32768
+#DEVVM_MAX_DISK_GB=200
 EOF
     echo "Wrote $SITE_ENV"
     if in_libvirt_group; then
@@ -109,7 +124,8 @@ cmd_init() {
     [ -e "$PROJECT_DIR/config.env" ] && { echo "$PROJECT_DIR/config.env exists" >&2; exit 1; }
     as_user mkdir -p "$PROJECT_DIR"
     as_user tee "$PROJECT_DIR/config.env" > /dev/null <<EOF
-# devvm settings for this project; they override devvm's defaults.env, see its README.
+# devvm settings for this project; they override devvm's defaults.env and the site
+# settings (but not the site's DEVVM_MAX_* limits), see the README.
 # Commit this file. Optional companions in this folder: provision.sh (runs once in a
 # new VM as the VM user) and commands.sh (project-specific devvm commands).
 
@@ -142,7 +158,8 @@ default_prefix() { echo "$(repo_name | tr -c 'A-Za-z0-9\n' '-')-"; }
 OPT_VM_NAME=
 while [ $# -gt 0 ]; do
     case $1 in
-        -n|--vm) OPT_VM_NAME=${2:?-n needs a VM}; shift 2 ;;
+        -n|--vm) [ $# -ge 2 ] || { echo "$1 needs a VM name (see: $PROG ls -a)" >&2; exit 1; }
+                 OPT_VM_NAME=$2; shift 2 ;;
         -n*) OPT_VM_NAME=${1#-n}; shift ;;
         *) break ;;
     esac
@@ -164,14 +181,14 @@ cmd_version() {
 }
 
 case "${1:-}" in
-    setup) cmd_setup; exit 0 ;;
-    init) cmd_init; exit 0 ;;
-    update) cmd_update; exit 0 ;;
-    version) cmd_version; exit 0 ;;
+    setup) no_args setup "${@:2}"; cmd_setup; exit 0 ;;
+    init) no_args init "${@:2}"; cmd_init; exit 0 ;;
+    update) no_args update "${@:2}"; cmd_update; exit 0 ;;
+    version) no_args version "${@:2}"; echo "devvm $(cmd_version)"; exit 0 ;;
 esac
 
 NO_COMMAND=
-if [ $# -eq 0 ]; then
+if [ $# -eq 0 ] || [[ ${1:-} =~ ^(-h|--help|help)$ ]]; then
     NO_COMMAND=1   # only the usage text follows, which needs no libvirt or site config
 elif [ "$(id -u)" != 0 ] && ! in_libvirt_group; then
     libvirt_group_hint
@@ -182,10 +199,6 @@ fi
 saved_env=$(export -p)
 # shellcheck source=defaults.env
 source "$HERE/defaults.env"
-if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/config.env" ]; then
-    # shellcheck source=/dev/null
-    source "$PROJECT_DIR/config.env"
-fi
 if [ -f "$SITE_ENV" ]; then
     # shellcheck source=/dev/null
     source "$SITE_ENV"
@@ -195,6 +208,13 @@ else
     echo "Missing $SITE_ENV, run: $PROG setup" >&2
     exit 1
 fi
+# The site's limits are the site's alone: the project's settings cannot raise them
+site_limits=$(declare -p DEVVM_MAX_VCPUS DEVVM_MAX_RAM_MB DEVVM_MAX_DISK_GB)
+if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/config.env" ]; then
+    # shellcheck source=/dev/null
+    source "$PROJECT_DIR/config.env"
+fi
+eval "$site_limits"
 eval "$saved_env"
 [ -n "$OPT_VM_NAME" ] && DEVVM_VM_NAME=$OPT_VM_NAME
 if [ -n "$REPO_ROOT" ]; then
@@ -270,6 +290,7 @@ All commands act on the VM of this checkout, ${DEVVM_VM_NAME:-none without a bra
   init              create .devvm/config.env for the project
   update            update devvm itself (git pull in $HERE)
   version           print devvm's version
+  help | -h | --help  this text
   ls [-a]           list the VMs of this project, with -a all VMs on this host;
                     * marks the one of this checkout
   create [--no-wait]
@@ -279,8 +300,9 @@ All commands act on the VM of this checkout, ${DEVVM_VM_NAME:-none without a bra
   wait              wait until cloud-init (and the project's provisioning) has finished
   ssh [CMD...]      log in to the VM or run a command there
   ip                print the VM's IP address
-  status            show VM state and snapshots
-  start | stop      boot or shut down the VM
+  status [-v]       show VM state, size, workspace and snapshots; -v adds virsh's details
+  start             boot the VM and wait for SSH
+  stop              shut the VM down and wait until it is off
   snapshot [SNAP]   create snapshot SNAP of the VM (default: clean)
   snapshot -u [SNAP]
                     update SNAP (default: clean) to the VM's current state; creates it if missing
@@ -312,6 +334,35 @@ EOF
 # Commands that act on the project's repository need one
 require_repo() {
     [ -n "$REPO_ROOT" ] || { echo "Not in a git repository" >&2; exit 1; }
+}
+
+# The VM must exist: one message instead of libvirt's "failed to get domain"
+require_vm() {
+    virsh list --all --name | grep -xF -- "$DEVVM_VM_NAME" > /dev/null && return
+    if [ -n "$OPT_VM_NAME" ]; then
+        echo "No VM $DEVVM_VM_NAME (see: $PROG ls -a)" >&2
+    else
+        echo "No VM $DEVVM_VM_NAME for this checkout. Create it with: $PROG create" >&2
+    fi
+    exit 1
+}
+
+# Refuse a VM larger than the site's limits (DEVVM_MAX_*, from site.env or the environment)
+check_limits() {
+    local item var limit value
+    for item in VCPUS RAM_MB DISK_GB; do
+        var=DEVVM_$item
+        limit=DEVVM_MAX_$item
+        value=${!var}
+        [ -n "${!limit}" ] || continue
+        [[ ${!limit} =~ ^[0-9]+$ ]] || { echo "$limit must be a number, got: ${!limit}" >&2; exit 1; }
+        [[ $value =~ ^[0-9]+$ ]] || { echo "$var must be a number, got: $value" >&2; exit 1; }
+        if [ "$value" -gt "${!limit}" ]; then
+            echo "$var=$value is above this site's limit $limit=${!limit} (set in $SITE_ENV)." >&2
+            echo "Lower $var in the project's config.env or the environment." >&2
+            exit 1
+        fi
+    done
 }
 
 # Empty if the VM has no lease (yet) or is not running; never fails, so that
@@ -633,6 +684,8 @@ cmd_create() {
         exit 1
     fi
     [ -r "$DEVVM_SSH_PUBKEY_FILE" ] || { echo "Cannot read $DEVVM_SSH_PUBKEY_FILE" >&2; exit 1; }
+    check_limits
+    echo "Creating $DEVVM_VM_NAME: $DEVVM_VCPUS vCPUs, $DEVVM_RAM_MB MB RAM, $DEVVM_DISK_GB GB disk"
     plan_mounts
     local fs_opts=() i
     if [ ${#FS_TAG[@]} -gt 0 ]; then
@@ -688,7 +741,9 @@ cmd_create() {
         --cloud-init "user-data=$ci_dir/user-data,meta-data=$ci_dir/meta-data,disable=on" \
         --graphics none --noautoconsole --import \
         "${fs_opts[@]}" \
-        --video virtio  # without any display device the Debian kernel resets right after GRUB
+        --video virtio 2>&1 |  # without any display device the Debian kernel resets right after GRUB
+        # virt-install's hint to finish an installation at the console does not apply
+        { grep -v -e '^Domain is still running' -e '^You can reconnect to the console' || true; }
     if [ "$DEVVM_SHARE_WORKSPACE" = 1 ]; then
         virsh metadata "$DEVVM_VM_NAME" --uri "$META_URI" --key devvm --live --config \
             --set "<workspace host=\"$REPO_ROOT\" guest=\"$GUEST_WS\"/>" > /dev/null
@@ -794,18 +849,20 @@ cmd_snapshot() {
             usage
             return 0 ;;
         -l|--list)
+            require_vm
             virsh snapshot-list "$DEVVM_VM_NAME"
             return ;;
         -d|--delete)
             shift
             [ $# -ge 1 ] || { echo "snapshot -d needs at least one snapshot name" >&2; exit 1; }
+            require_vm
             for name in "$@"; do
                 check_snapshot_name "$name"
                 snapshot_exists "$name" || { echo "No snapshot \"$name\"" >&2; exit 1; }
             done
             for name in "$@"; do
                 virsh snapshot-delete "$DEVVM_VM_NAME" --snapshotname "$name" > /dev/null
-                echo "Deleted snapshot $name"
+                echo "Deleted snapshot $name of $DEVVM_VM_NAME"
             done
             return ;;
         -u|--update)
@@ -815,24 +872,34 @@ cmd_snapshot() {
     [ $# -le 1 ] || { echo "snapshot takes at most one name" >&2; exit 1; }
     snap=${1:-clean}
     check_snapshot_name "$snap"
-    if snapshot_exists "$snap"; then
-        [ "$update" = 1 ] || { echo "Snapshot \"$snap\" exists; use snapshot -u $snap to update it" >&2; exit 1; }
+    require_vm
+    local exists=
+    snapshot_exists "$snap" && exists=1
+    if [ -n "$exists" ] && [ "$update" != 1 ]; then
+        echo "Snapshot \"$snap\" exists; use snapshot -u $snap to update it" >&2
+        exit 1
     fi
     [ "$(virsh domstate "$DEVVM_VM_NAME")" = running ] && eject_cdroms
-    if snapshot_exists "$snap"; then
+    if [ -n "$exists" ]; then
         # libvirt cannot overwrite a snapshot: replace it. A failure of the second step
         # leaves no snapshot of that name, so say so.
         virsh snapshot-delete "$DEVVM_VM_NAME" --snapshotname "$snap" > /dev/null
-        virsh snapshot-create-as "$DEVVM_VM_NAME" --name "$snap" --atomic ||
+        virsh snapshot-create-as "$DEVVM_VM_NAME" --name "$snap" --atomic > /dev/null ||
             { echo "Old snapshot \"$snap\" was deleted, but creating the new one failed" >&2; exit 1; }
+        echo "Snapshot $snap of $DEVVM_VM_NAME updated"
     else
-        virsh snapshot-create-as "$DEVVM_VM_NAME" --name "$snap" --atomic
+        virsh snapshot-create-as "$DEVVM_VM_NAME" --name "$snap" --atomic > /dev/null
+        echo "Snapshot $snap of $DEVVM_VM_NAME created"
     fi
 }
 
 cmd_reset() {
+    [ $# -le 1 ] || { echo "reset takes at most one snapshot name, got: $*" >&2; exit 1; }
     check_snapshot_name "${1:-clean}"
-    virsh snapshot-revert "$DEVVM_VM_NAME" --snapshotname "${1:-clean}" --running
+    require_vm
+    snapshot_exists "${1:-clean}" || { echo "No snapshot \"${1:-clean}\" (see: $PROG snapshot -l)" >&2; exit 1; }
+    virsh snapshot-revert "$DEVVM_VM_NAME" --snapshotname "${1:-clean}" --running > /dev/null
+    echo "Reverted $DEVVM_VM_NAME to snapshot ${1:-clean}"
     # The guest clock resumes at the time the snapshot was taken; NTP may take a while
     # (or be unreachable), so set it from the host
     vm_ssh -o ConnectTimeout=10 "sudo date -u -s @$(date -u +%s) > /dev/null" ||
@@ -840,29 +907,102 @@ cmd_reset() {
 }
 
 cmd_status() {
-    local ws
-    virsh dominfo "$DEVVM_VM_NAME"
+    local ws info verbose=
+    case "${1:-}" in
+        "") ;;
+        -v|--verbose) verbose=1 ;;
+        *) echo "Unknown option for status: $1 (only -v)" >&2; exit 1 ;;
+    esac
+    [ $# -le 1 ] || { echo "status takes at most one option, got: $*" >&2; exit 1; }
+    require_vm
+    info=$(virsh dominfo "$DEVVM_VM_NAME")
+    echo "VM:         $DEVVM_VM_NAME"
+    echo "State:      $(awk -F': +' '$1 == "State" {print $2}' <<< "$info")"
+    echo "IP:         $(vm_ip || true)"
+    echo "Size:       $(awk -F': +' '$1 == "CPU(s)" {c = $2} $1 == "Max memory" {split($2, m, " "); r = int(m[1] / 1024)} END {print c " vCPUs, " r " MB RAM"}' <<< "$info")"
     ws=$(vm_workspace)
     if [ -n "$ws" ]; then
-        echo "Workspace:      $(vm_workspace_host) at $ws"
+        echo "Workspace:  $(vm_workspace_host) at $ws"
     else
-        echo "Workspace:      ~/$DEVVM_VM_REPO, by push and fetch"
+        echo "Workspace:  ~/$DEVVM_VM_REPO, by push and fetch"
     fi
+    echo
     virsh snapshot-list "$DEVVM_VM_NAME"
+    if [ -n "$verbose" ]; then
+        echo
+        echo "$info"
+    fi
 }
 
 cmd_destroy() {
+    local snaps
+    case "${1:-}" in
+        ""|-y) ;;
+        *) echo "Unknown option for destroy: $1 (only -y)" >&2; exit 1 ;;
+    esac
+    [ $# -le 1 ] || { echo "destroy takes at most -y, got: $*" >&2; exit 1; }
+    require_vm
     if [ "${1:-}" != "-y" ]; then
         confirm "Remove VM $DEVVM_VM_NAME with disk $DISK and all snapshots?" "use destroy -y"
     fi
+    snaps=$(virsh snapshot-list "$DEVVM_VM_NAME" --name | grep -c . || true)
     virsh destroy "$DEVVM_VM_NAME" &>/dev/null || true
-    virsh undefine "$DEVVM_VM_NAME" --snapshots-metadata --remove-all-storage
+    virsh undefine "$DEVVM_VM_NAME" --snapshots-metadata --remove-all-storage > /dev/null
     # The host key stays: a VM re-created under this name keeps its identity
     rm -f "$KNOWN_HOSTS"
+    echo "Destroyed $DEVVM_VM_NAME: the disk and $snaps snapshot(s) are removed"
+}
+
+cmd_start() {
+    local state
+    require_vm
+    state=$(virsh domstate "$DEVVM_VM_NAME")
+    if [ "$state" != "shut off" ]; then
+        echo "$DEVVM_VM_NAME is $state, not shut off"
+        return
+    fi
+    virsh start "$DEVVM_VM_NAME" > /dev/null
+    echo "Started $DEVVM_VM_NAME, waiting for SSH ..."
+    local i
+    for i in $(seq 40); do
+        if vm_ssh -o ConnectTimeout=5 -o BatchMode=yes true 2> /dev/null; then
+            echo "$DEVVM_VM_NAME is up, at $(vm_ip)"
+            return
+        fi
+        sleep 3
+    done
+    echo "$DEVVM_VM_NAME started, but SSH does not answer yet (see: $PROG wait)" >&2
+    exit 1
+}
+
+# Asks the guest to shut down and waits until it has (a stuck guest: see virsh destroy)
+cmd_stop() {
+    local i
+    require_vm
+    if [ "$(virsh domstate "$DEVVM_VM_NAME")" = "shut off" ]; then
+        echo "$DEVVM_VM_NAME is already shut off"
+        return
+    fi
+    virsh shutdown "$DEVVM_VM_NAME" > /dev/null
+    echo "Shutting down $DEVVM_VM_NAME ..."
+    for i in $(seq 60); do
+        if [ "$(virsh domstate "$DEVVM_VM_NAME")" = "shut off" ]; then
+            echo "$DEVVM_VM_NAME is shut off"
+            return
+        fi
+        sleep 2
+    done
+    echo "$DEVVM_VM_NAME is still shutting down after 2 minutes" >&2
+    exit 1
 }
 
 cmd_ls() {
     local filter name state ip size snaps mark
+    case "${1:-}" in
+        ""|-a) ;;
+        *) echo "Unknown option for ls: $1 (only -a)" >&2; exit 1 ;;
+    esac
+    [ $# -le 1 ] || { echo "ls takes at most -a, got: $*" >&2; exit 1; }
     if [ "${1:-}" = -a ]; then
         filter=.
     elif [ -n "${DEVVM_VM_PREFIX:-}" ]; then
@@ -985,6 +1125,7 @@ cmd_test() {
         echo "No test command: set DEVVM_TEST_COMMAND in $PROJECT_DIR/config.env, see README" >&2
         exit 1
     fi
+    require_vm
     [ -z "$reset" ] || cmd_reset "$snap"
     ws=$(vm_workspace)
     if [ -n "$ws" ]; then
@@ -1030,20 +1171,22 @@ fi
 case "${1:-}" in
     ls) shift; cmd_ls "$@" ;;
     create) shift; cmd_create "$@" ;;
-    wait) cmd_wait ;;
-    ssh) shift; vm_ssh "$@" ;;
-    ip) require_ip ;;
-    status) cmd_status ;;
-    start) virsh start "$DEVVM_VM_NAME" ;;
-    stop) virsh shutdown "$DEVVM_VM_NAME" ;;
+    wait) no_args wait "${@:2}"; require_vm; cmd_wait ;;
+    ssh) shift; require_vm; vm_ssh "$@" ;;
+    ip) no_args ip "${@:2}"; require_vm; require_ip ;;
+    status) shift; cmd_status "$@" ;;
+    start) no_args start "${@:2}"; cmd_start ;;
+    stop) no_args stop "${@:2}"; cmd_stop ;;
     snapshot) shift; cmd_snapshot "$@" ;;
-    reset) cmd_reset "${2:-}" ;;
+    reset) shift; cmd_reset "$@" ;;
     destroy) shift; cmd_destroy "$@" ;;
-    prune) cmd_prune ;;
-    push) shift; cmd_push "$@" ;;
-    fetch) cmd_fetch ;;
+    prune) no_args prune "${@:2}"; cmd_prune ;;
+    push) shift; [ $# -le 1 ] || { echo "push takes at most one ref, got: $*" >&2; exit 1; }
+          require_vm; cmd_push "$@" ;;
+    fetch) no_args fetch "${@:2}"; require_vm; cmd_fetch ;;
     test) shift; cmd_test "$@" ;;
-    setup-dev) cmd_setup_dev ;;
+    setup-dev) no_args setup-dev "${@:2}"; require_vm; cmd_setup_dev ;;
+    -h|--help|help) usage ;;
     "") usage; exit 1 ;;
     *)
         fn=project_cmd_${1//-/_}
@@ -1051,8 +1194,10 @@ case "${1:-}" in
             shift
             "$fn" "$@"
         else
-            echo "Unknown command: $1" >&2
+            # The error last: the usage is long and would push it off the screen
             usage >&2
+            echo >&2
+            echo "Unknown command: $1 (the commands are listed above)" >&2
             exit 1
         fi ;;
 esac
