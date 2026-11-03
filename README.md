@@ -85,6 +85,11 @@ ssh-agent, `wait` asks for it once; `ssh-add` avoids the prompts of later comman
 sits on libvirt's NAT network. Ports are reachable from the host at the VM's address
 (`devvm ip`), or via SSH port forwarding (`devvm ssh -L 8080:localhost:8080`).
 
+Snapshots: `devvm snapshot NAME` creates one (default name "clean"; an existing name is
+refused), `snapshot -u NAME` brings an existing one up to the VM's current state,
+`snapshot -l` lists them with creation time and state, `snapshot -d NAME...` deletes
+them. `devvm ls` shows the snapshot names per VM.
+
 `reset` also sets the VM's clock, which otherwise resumes at the time of the snapshot.
 It reverts the VM's disk, including volumes, but not shared folders: they are the host's
 files.
