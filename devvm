@@ -122,6 +122,9 @@ DEVVM_VM_PREFIX=$(default_prefix)
 #DEVVM_VCPUS=4
 #DEVVM_RAM_MB=8192
 #DEVVM_DISK_GB=40
+
+# The tests, run by \`devvm test [ARGS...]\` in the checkout in the VM, with the ARGS
+#DEVVM_TEST_COMMAND=./run-tests.sh
 EOF
     echo "Wrote $PROJECT_DIR/config.env"
 }
@@ -280,6 +283,10 @@ All commands act on the VM of this checkout, ${DEVVM_VM_NAME:-none without a bra
   start | stop      boot or shut down the VM
   snapshot [SNAP]   create snapshot SNAP of the VM (default: clean)
   reset [SNAP]      revert the VM to snapshot SNAP (default: clean)
+  test [--no-reset] [--snapshot SNAP] [--] [ARGS...]
+                    run the project's tests in the VM: reset to SNAP (default: clean),
+                    push the branch to an unshared VM, run DEVVM_TEST_COMMAND with ARGS in
+                    the checkout; exits with the tests' status
   destroy [-y]      remove the VM, its disk and snapshots (keeps base image and host key)
   prune             delete base images that no VM disk and no current setting uses
 
@@ -599,11 +606,12 @@ next_steps() {
     echo "    $PROG snapshot dev       optional: a baseline that keeps Claude Code ($PROG reset dev)"
     echo "    $PROG ssh                log in, then: claude"
     echo "  Test runs:"
-    echo "    $PROG reset              before each run, back to \"clean\""
-    if [ "$DEVVM_SHARE_WORKSPACE" != 1 ]; then
-        echo "    $PROG push [REF]         the commit to test"
+    if [ -n "${DEVVM_TEST_COMMAND:-}" ]; then
+        echo "    $PROG test [ARGS...]     reset to \"clean\" and run: $DEVVM_TEST_COMMAND [ARGS...]"
+    else
+        echo "    $PROG test [ARGS...]     after setting DEVVM_TEST_COMMAND in .devvm/config.env, see README"
+        echo "    or by hand: $PROG reset, then $PROG ssh 'cd $ws && ...'"
     fi
-    echo "    $PROG ssh 'cd $ws && ...'   or a command in .devvm/commands.sh, see README"
 }
 
 cmd_create() {
@@ -895,6 +903,44 @@ cmd_fetch() {
     vm_git fetch "$DEVVM_VM_USER@$ip:$DEVVM_VM_REPO" "+refs/heads/*:refs/remotes/$DEVVM_VM_NAME/*"
 }
 
+# The project's tests, in a VM reset to a snapshot, with the checkout as on the host:
+# shared, or pushed (the branch checked out here) for a VM without a shared checkout.
+# The command runs in a login shell, with the PATH of an interactive session (e.g.
+# ~/.local/bin from provisioning); devvm exits with its status.
+cmd_test() {
+    local snap=clean reset=1 ws dir cmd
+    # A project command "test" predates this one and keeps working
+    if declare -F project_cmd_test > /dev/null; then
+        project_cmd_test "$@"
+        return
+    fi
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --no-reset) reset=''; shift ;;
+            --snapshot) [ $# -ge 2 ] || { echo "--snapshot needs a snapshot name" >&2; exit 1; }
+                        snap=$2; shift 2 ;;
+            --) shift; break ;;
+            *) break ;;   # the first argument that is not an option of devvm goes to the tests
+        esac
+    done
+    if [ -z "${DEVVM_TEST_COMMAND:-}" ]; then
+        echo "No test command: set DEVVM_TEST_COMMAND in $PROJECT_DIR/config.env, see README" >&2
+        exit 1
+    fi
+    [ -z "$reset" ] || cmd_reset "$snap"
+    ws=$(vm_workspace)
+    if [ -n "$ws" ]; then
+        dir=$(printf %q "$ws")
+    else
+        cmd_push
+        # Not relative to the login directory: login shells may start in the checkout
+        dir="\"\$HOME\"/$(printf %q "$DEVVM_VM_REPO")"
+    fi
+    cmd="cd $dir && $DEVVM_TEST_COMMAND"
+    [ $# -eq 0 ] || cmd+=" $(printf '%q ' "$@")"
+    vm_ssh "bash -lc $(printf %q "$cmd")"
+}
+
 cmd_setup_dev() {
     local name email
     name=$(as_user git ${REPO_ROOT:+-C "$REPO_ROOT"} config user.name || true)
@@ -918,6 +964,11 @@ cmd_setup_dev() {
     echo "      $PROG snapshot dev, and later $PROG reset dev instead of reset"
 }
 
+# Sourced, e.g. by the unit tests: the functions and settings, no command
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0
+fi
+
 case "${1:-}" in
     ls) shift; cmd_ls "$@" ;;
     create) shift; cmd_create "$@" ;;
@@ -933,6 +984,7 @@ case "${1:-}" in
     prune) cmd_prune ;;
     push) shift; cmd_push "$@" ;;
     fetch) cmd_fetch ;;
+    test) shift; cmd_test "$@" ;;
     setup-dev) cmd_setup_dev ;;
     "") usage; exit 1 ;;
     *)
