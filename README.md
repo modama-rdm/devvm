@@ -68,13 +68,17 @@ To address a VM other than the one of this checkout, give its name with `-n`:
 
 ```
 devvm ls          # VMs of this project, * marks the one of this checkout; -a: all on this host
-devvm create      # download and verify the base image, create and boot the VM
-devvm wait        # wait for cloud-init and the project's provisioning
-devvm snapshot    # snapshot "clean" as a baseline
+devvm create      # download and verify the base image, create and boot the VM, wait for
+                  # cloud-init and the project's provisioning, snapshot "clean"
 devvm ssh         # log in
 devvm reset       # revert to "clean"
 devvm destroy     # remove VM, disk and snapshots; asks first, -y in scripts
 ```
+
+`create` reports what it waits for and prints the next steps, for interactive work and
+for test runs. `create --no-wait` returns once the VM is booting; then `devvm wait` and
+`devvm snapshot` complete it. If your SSH key has a passphrase and is not loaded in
+ssh-agent, `wait` asks for it once; `ssh-add` avoids the prompts of later commands.
 
 `devvm` without arguments lists all commands, including those of the project. The VM
 sits on libvirt's NAT network. Ports are reachable from the host at the VM's address
@@ -140,7 +144,7 @@ give each its own worktree and run `devvm` from there; each VM shares its worktr
 ```
 git worktree add -b feature-a ../myproject-feature-a origin/master
 cd ../myproject-feature-a
-devvm create && devvm wait && devvm snapshot   # VM myproject-feature-a
+devvm create                                   # VM myproject-feature-a
 ```
 
 The VMs have different addresses on the NAT network, so the published ports of their
@@ -185,8 +189,9 @@ upstream from the host keeps the decision about what reaches upstream with you.
 ```
 git worktree add -b my-feature ../myproject-my-feature
 cd ../myproject-my-feature
-devvm create && devvm wait && devvm snapshot
+devvm create
 devvm setup-dev                   # git name/email from the host, installs Claude Code
+devvm snapshot dev                # optional: a baseline with Claude Code
 devvm ssh                         # starts in the workspace; then: claude
 ```
 
@@ -196,8 +201,26 @@ devvm ssh                         # starts in the workspace; then: claude
 worktree on the host right away; review them there and push upstream from the host.
 
 The VM user may use Docker and `sudo` without a password, so Claude can build and run
-things freely inside the VM. Use `devvm reset` to return the VM to the clean snapshot
-if something goes wrong; the shared worktree keeps its state, which git can restore.
+things freely inside the VM. Use `devvm reset dev` (or `devvm reset` for the clean
+snapshot, without Claude Code) to return the VM to a known state if something goes
+wrong; the shared worktree keeps its state, which git can restore.
+
+## Test runs
+
+For reproducible runs, start each from the clean snapshot and run the tests over SSH,
+best as a project command (see below), e.g. in `.devvm/commands.sh`:
+
+```
+PROJECT_USAGE+="  test              reset the VM and run the tests in it"
+project_cmd_test() {
+    cmd_reset
+    vm_ssh "cd $(vm_workspace) && ./run-tests.sh"
+}
+```
+
+With a shared checkout, the tests see the working tree of the host, uncommitted changes
+included. To test a fixed commit instead, create the VM with `DEVVM_SHARE_WORKSPACE=0`
+and `devvm push` the commit after the reset, then run the tests in `~/<DEVVM_VM_REPO>`.
 
 ## Project configuration
 
@@ -211,7 +234,7 @@ project. `devvm init` creates a starting `config.env`. All files are optional:
   DEVVM_RAM_MB=8192
   ```
 - **`provision.sh`**: runs once in a new VM, as the VM user (with passwordless `sudo`),
-  after the packages are installed, from cloud-init. `devvm wait` reports a failure,
+  after the packages are installed, from cloud-init. `devvm create` reports a failure,
   with the end of the cloud-init log. Install toolchains here, e.g. `uv` or `rustup`.
   It is copied into the VM when the VM is created; changes apply to new VMs.
 - **`commands.sh`**: project-specific commands. It is sourced by `devvm`; each
