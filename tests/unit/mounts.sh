@@ -40,6 +40,40 @@ test_linked_worktree_shares_git_dir() {
     assert_eq "${FS_TGT[1]}" "$TMP/repo/.git"
 }
 
+# Issue #8. The VM's view of a linked worktree with a submodule, without a VM: the
+# checkout at GUEST_WS (moved there instead of shared), the git directory at its host
+# path, and the symlinks that guest_git_links makes, as setup.sh would
+test_linked_worktree_with_submodules_in_vm() {
+    git_q init -q -b main ../sub
+    git_q -C ../sub commit -q --allow-empty -m sub
+    git_q -c protocol.file.allow=always submodule add -q ../sub deploy/sub
+    git_q commit -q -m submodule
+    git_q worktree add -q -b other ../wt
+    cd ../wt
+    git_q -c protocol.file.allow=always submodule update -q --init
+    . "$DEVVM"
+    DEVVM_WORKSPACE_ROOT=$TMP/workspaces
+    plan_mounts
+    assert_eq "$GUEST_WS" "$TMP/workspaces/wt"
+    cd "$TMP"
+    mkdir workspaces
+    mv wt workspaces/
+    # shellcheck disable=SC2317  # called by the eval below
+    mkpoint() { mkdir -p "$1"; }
+    eval "$(guest_git_links)"
+    cd "$GUEST_WS"
+    git status --short > "$TMP/out" 2>&1 || fail "git status: $(cat "$TMP/out")"
+    assert_eq "$(cat "$TMP/out")" ""
+    assert_contains "$(git submodule status)" " deploy/sub "
+    # The submodule's working tree is the checkout in the VM
+    assert_eq "$(git -C deploy/sub rev-parse --show-toplevel)" "$GUEST_WS/deploy/sub"
+    echo change > deploy/sub/file
+    assert_contains "$(git status --short)" "? deploy/sub"
+    assert_eq "$GIT_MIRROR" "$TMP/workspaces/repo/.git"
+    # A second run of setup.sh leaves the links alone
+    eval "$(guest_git_links)"
+}
+
 test_variables_in_mounts() {
     . "$DEVVM"
     GUEST_WS=/workspaces/repo

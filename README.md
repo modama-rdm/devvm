@@ -118,7 +118,10 @@ root or other users keep those owners on the host, as with Docker on the host. C
 made in the VM are commits in the host repository, and `push`/`fetch` are not needed.
 
 A linked worktree's `.git` file points to the main repository's git directory by its
-absolute host path, so that directory is shared as well, at that path. git in the VM is
+absolute host path, so that directory is shared as well, at that path. Its submodules
+point to it by a relative path, so the VM also gets a symlink to it where that path leads
+from the checkout in the VM (`/workspaces/<main checkout>/.git` for a worktree next to the
+main checkout); nothing is created where something exists already. git in the VM is
 set up not to prune the other worktrees of the repository, whose folders it does not
 see (`gc.worktreePruneExpire=never`); avoid `git worktree prune` in the VM.
 
