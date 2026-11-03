@@ -88,6 +88,30 @@ EOF
     "$DEVVM" ssh "touch /workspaces/repo/from-vm"
     [ -O from-vm ] || fail "file from the VM missing or not owned by $(id -un)"
 
+    step "snapshots: create, list, refuse duplicate, update, reset, delete"
+    "$DEVVM" ssh "echo v1 > snapmark"
+    "$DEVVM" snapshot dev
+    "$DEVVM" ssh "echo v2 > snapmark"
+    rc=0
+    "$DEVVM" snapshot dev > "$TMP/dup.log" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "snapshot dev over an existing one succeeded"
+    assert_contains "$(cat "$TMP/dup.log")" "snapshot -u dev"
+    out=$("$DEVVM" snapshot -l)
+    assert_contains "$out" "clean"
+    assert_contains "$out" "dev"
+    assert_contains "$("$DEVVM" ls)" "clean, dev"
+    "$DEVVM" snapshot -u dev
+    "$DEVVM" ssh "echo v3 > snapmark"
+    "$DEVVM" reset dev
+    assert_eq "$("$DEVVM" ssh cat snapmark)" v2 "state after reset to the updated snapshot"
+    "$DEVVM" snapshot -u fresh   # -u creates a missing snapshot
+    "$DEVVM" snapshot -d dev fresh
+    out=$("$DEVVM" snapshot -l)
+    assert_not_contains "$out" " dev "
+    assert_not_contains "$out" "fresh"
+    assert_contains "$out" "clean"
+    ! "$DEVVM" snapshot -d nosuch > /dev/null 2>&1 || fail "deleting a missing snapshot succeeded"
+
     step "test: reset, arguments, login shell"
     "$DEVVM" ssh "touch leftover"
     out=$("$DEVVM" test 0 'a b' "c'd")

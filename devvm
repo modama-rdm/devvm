@@ -774,7 +774,8 @@ eject_cdroms() {
 }
 
 snapshot_exists() {
-    virsh snapshot-list "$DEVVM_VM_NAME" --name | grep -qxF -- "$1"
+    # No grep -q: it would exit early and the SIGPIPE to virsh fails the pipeline
+    virsh snapshot-list "$DEVVM_VM_NAME" --name | grep -xF -- "$1" > /dev/null
 }
 
 # Snapshot names are used as virsh arguments; refuse option-like ones such as --help
