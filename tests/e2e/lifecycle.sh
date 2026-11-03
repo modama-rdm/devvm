@@ -1,6 +1,7 @@
 #!/bin/bash
 # A real VM through its life: create (with wait and snapshot), ssh, the hints that
-# create prints, provisioning, the shared workspace, test with reset, destroy.
+# create prints, provisioning, the shared workspace, setup-dev, snapshots, test with
+# reset, destroy.
 #
 # Needs KVM, libvirt (member of the libvirt group), virt-install and virtiofsd. The
 # project is a small throw-away repository; the VM uses a fresh key, served by its own
@@ -95,6 +96,12 @@ EOF
     step "shared workspace"
     "$DEVVM" ssh "touch /workspaces/repo/from-vm"
     [ -O from-vm ] || fail "file from the VM missing or not owned by $(id -un)"
+
+    step "setup-dev: screenshot tools and the kaizen plugin"
+    "$DEVVM" setup-dev
+    "$DEVVM" ssh dpkg -s xvfb xterm xdotool imagemagick > /dev/null || fail "tools not installed"
+    # shellcheck disable=SC2088  # the VM's shell expands the tilde
+    assert_contains "$("$DEVVM" ssh '~/.local/bin/claude plugin list')" "kaizen@uellue"
 
     step "snapshots: create, list, refuse duplicate, update, reset, delete"
     "$DEVVM" ssh "echo v1 > snapmark"
