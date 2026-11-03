@@ -444,6 +444,9 @@ render() {
 FS_TAG=() FS_SRC=() FS_TGT=() FS_RO=() VOL_NAME=() VOL_TGT=()
 # The checkout as seen in the VM ("containerWorkspaceFolder")
 GUEST_WS=
+# For a linked worktree: the main repository's git directory and where it would lie in
+# the VM by its position relative to the checkout on the host (see guest_git_links)
+GIT_COMMON='' GIT_MIRROR=''
 # libvirt metadata namespace in which create records the shared workspace
 META_URI=https://devvm.invalid/1
 
@@ -494,7 +497,10 @@ plan_mounts() {
         common=$(as_user git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)
         case "$common/" in
             "$REPO_ROOT"/*) ;;
-            *) add_fs devvm-git "$common" "$common" "" ;;
+            *)
+                add_fs devvm-git "$common" "$common" ""
+                GIT_COMMON=$common
+                GIT_MIRROR=$(realpath -m "$GUEST_WS/$(realpath -m --relative-to="$REPO_ROOT" "$common")") ;;
         esac
     fi
     read -rd '' -a specs <<< "$DEVVM_MOUNTS" || true
@@ -582,14 +588,7 @@ EOS
     for i in "${!VOL_NAME[@]}"; do
         echo "mount_vol $(printf '%q ' "${VOL_NAME[i]}" "${VOL_TGT[i]}")"
     done
-    if [ "$DEVVM_SHARE_WORKSPACE" = 1 ] && [ "$GUEST_WS" != "$REPO_ROOT" ]; then
-        # The repository records a linked worktree by its host path; without that path,
-        # git in the VM considers the worktree prunable
-        echo "if [ ! -e $(printf %q "$REPO_ROOT") ]; then"
-        echo "    mkpoint $(printf %q "$(dirname "$REPO_ROOT")")"
-        echo "    ln -s $(printf '%q ' "$GUEST_WS" "$REPO_ROOT")"
-        echo "fi"
-    fi
+    guest_git_links
     echo "systemctl daemon-reload"
     # Login shells start in the workspace, like a devcontainer terminal
     echo "echo $(printf %q "if [ \"\$PWD\" = \"\$HOME\" ] && [ -d $GUEST_WS ]; then cd $GUEST_WS; fi") > /etc/profile.d/devvm-workspace.sh"
@@ -605,6 +604,29 @@ EOS
         cmd+="git config --global gc.worktreePruneExpire never && "
     fi
     echo "if command -v git > /dev/null; then su - \"\$U\" -c $(printf %q "${cmd}true"); fi"
+}
+
+# Commands for setup.sh that make the git metadata of a shared checkout resolve in the VM,
+# where the checkout is at GUEST_WS instead of its host path; each creates a symlink
+# unless something is at its path already
+guest_git_links() {
+    [ "$DEVVM_SHARE_WORKSPACE" = 1 ] && [ "$GUEST_WS" != "$REPO_ROOT" ] || return 0
+    # The repository records a linked worktree by its host path; without that path,
+    # git in the VM considers the worktree prunable
+    link_cmd "$GUEST_WS" "$REPO_ROOT"
+    # Submodules of a linked worktree (and the worktree itself with git's
+    # extensions.relativeWorktrees) point to the main repository's git directory by a
+    # relative path, which only resolves if it lies in the same place relative to the
+    # checkout as on the host
+    if [ -n "$GIT_MIRROR" ] && [ "$GIT_MIRROR" != "$GIT_COMMON" ]; then
+        link_cmd "$GIT_COMMON" "$GIT_MIRROR"
+    fi
+}
+link_cmd() {   # TARGET LINK
+    echo "if [ ! -e $(printf %q "$2") ] && [ ! -L $(printf %q "$2") ]; then"
+    echo "    mkpoint $(printf %q "$(dirname "$2")")"
+    echo "    ln -s $(printf '%q ' "$1" "$2")"
+    echo "fi"
 }
 
 # The parts of user-data that come from settings: packages, mounts, the project's
