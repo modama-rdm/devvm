@@ -204,8 +204,12 @@ devvm snapshot dev                # optional: a baseline with Claude Code
 devvm ssh                         # starts in the workspace; then: claude
 ```
 
-`setup-dev` installs Claude Code with the official installer
-(`https://claude.ai/install.sh`) into `~/.local/bin`. Log in on the first start of
+`setup-dev` installs the Debian packages `xvfb`, `xterm`, `xdotool` and `imagemagick`,
+which let an agent drive a terminal and judge it by screenshots (the `hallway-test`
+skill of the kaizen plugin), and Claude Code with the official installer
+(`https://claude.ai/install.sh`) into `~/.local/bin`, then the `kaizen` plugin (skills for
+requirements, walk-throughs, hallway tests and debriefs) from the `uellue/skills`
+marketplace, at user scope. Log in on the first start of
 `claude` in the VM; that login is stored in the VM only. Claude's commits appear in the
 worktree on the host right away; review them there and push upstream from the host.
 
