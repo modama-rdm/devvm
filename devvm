@@ -88,7 +88,7 @@ cmd_setup() {
     as_user mkdir -p "$(dirname "$SITE_ENV")"
     as_user tee "$SITE_ENV" > /dev/null <<EOF
 # Site-specific settings for devvm, written by \`devvm setup\` on $(date -I).
-# They apply to all projects. Generic defaults are in defaults.env next to devvm.sh,
+# They apply to all projects. Generic defaults are in defaults.env next to devvm,
 # project settings in .devvm/config.env of each project; any variable can be
 # overridden per command in the environment, e.g. RAM_MB=32768 devvm create
 
@@ -153,9 +153,26 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# devvm updates itself from the git clone it runs from, see install.sh
+require_clone() {
+    as_user git -C "$HERE" rev-parse --is-inside-work-tree > /dev/null 2>&1 ||
+        { echo "$HERE is not a git clone; update devvm the way it was installed" >&2; exit 1; }
+}
+cmd_update() {
+    require_clone
+    as_user git -C "$HERE" pull --ff-only
+    echo "devvm $(cmd_version)"
+}
+cmd_version() {
+    require_clone
+    as_user git -C "$HERE" describe --tags --always --dirty
+}
+
 case "${1:-}" in
     setup) cmd_setup; exit 0 ;;
     init) cmd_init; exit 0 ;;
+    update) cmd_update; exit 0 ;;
+    version) cmd_version; exit 0 ;;
 esac
 
 NO_COMMAND=
@@ -256,6 +273,8 @@ All commands act on the VM of this checkout, ${VM_NAME:-none without a branch}, 
 
   setup             write the site settings to ~/.config/devvm/site.env
   init              create .devvm/config.env for the project
+  update            update devvm itself (git pull in $HERE)
+  version           print devvm's version
   ls [-a]           list the VMs of this project, with -a all VMs on this host;
                     * marks the one of this checkout
   create            download base image, create and start the VM; shares this checkout

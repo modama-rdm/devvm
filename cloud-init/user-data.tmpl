@@ -1,6 +1,6 @@
 #cloud-config
 # Placeholders (VM_NAME, VM_USER, VM_UID, VM_GID, SSH_PUBKEY between @ signs) are
-# substituted by devvm.sh. devvm.sh appends packages, the mounts of shared folders, the
+# substituted by devvm, which appends packages, the mounts of shared folders, the
 # project's provisioning script and the VM's host key, generated on the host. No host
 # credentials or secrets are passed in.
 hostname: @VM_NAME@

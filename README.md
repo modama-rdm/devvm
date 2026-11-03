@@ -13,8 +13,7 @@ and shares nothing with the host. No host credentials are passed to the VM.
 
 `devvm` acts on the git repository of the current directory, the *project*. A project
 can carry its own settings, provisioning and commands in a `.devvm/` folder, see
-[Project configuration](#project-configuration). Nothing in this folder is specific to
-one project.
+[Project configuration](#project-configuration).
 
 ## Prerequisites
 
@@ -27,21 +26,26 @@ one project.
 
 ## Installation
 
-`devvm.sh` finds its own files (`defaults.env`, `cloud-init/`, `guest/`) next to
-itself, also through a symlink. To use it for several projects, put it on `PATH`:
+devvm runs from a git clone; `install.sh` links the `devvm` command into
+`~/.local/bin`:
 
 ```
-ln -s /path/to/devvm/devvm.sh ~/.local/bin/devvm
+git clone https://github.com/modama-rdm/devvm ~/.local/share/devvm
+~/.local/share/devvm/install.sh
+devvm setup
 ```
 
-The examples below use `devvm`; `./devvm.sh` works the same. Either acts on the
-repository of the current directory, not the one `devvm.sh` lives in.
+`devvm update` pulls the latest version into the clone (`git pull --ff-only`), and
+`devvm version` shows the installed one. For a fixed version, check out a tag in the
+clone. `devvm` finds its own files (`defaults.env`, `cloud-init/`, `guest/`) next to
+itself, also through the symlink; it acts on the repository of the current directory,
+not on its own clone.
 
 ## Configuration
 
 Settings are shell variables, read in this order, later ones win:
 
-1. `defaults.env` next to `devvm.sh`: generic defaults (image, sizing, network,
+1. `defaults.env` next to `devvm`: generic defaults (image, sizing, network,
    packages)
 2. `.devvm/config.env` of the project, if present
 3. `~/.config/devvm/site.env` of the invoking user, for all projects: `POOL_DIR` for
@@ -209,7 +213,7 @@ project. `devvm init` creates a starting `config.env`. All files are optional:
   after the packages are installed, from cloud-init. `devvm wait` reports a failure,
   with the end of the cloud-init log. Install toolchains here, e.g. `uv` or `rustup`.
   It is copied into the VM when the VM is created; changes apply to new VMs.
-- **`commands.sh`**: project-specific commands. It is sourced by `devvm.sh`; each
+- **`commands.sh`**: project-specific commands. It is sourced by `devvm`; each
   function `project_cmd_<name>` becomes `devvm <name>` (a `-` in the command is a `_`
   in the function name), and lines appended to `PROJECT_USAGE` show up in the usage
   text. Built-in commands take precedence. The functions can use devvm's helpers and
@@ -233,7 +237,7 @@ project. `devvm init` creates a starting `config.env`. All files are optional:
 `config.env`, `commands.sh` and `provision.sh` are code that runs on the host or in the
 VM, like a Makefile: use `devvm` only in repositories you trust.
 
-## Upgrading from the modama-only version
+## Upgrading from the version in the data management system repository
 
 devvm started in the data management system ("modama") repository. Its site settings
 moved from `~/.config/modama-devvm/site.env` to `~/.config/devvm/site.env`; the old
@@ -242,3 +246,6 @@ keys keep working.
 
 New VMs share the checkout by default. VMs created before that share nothing and keep
 working with `push` and `fetch`; set `SHARE_WORKSPACE=0` to create more of that kind.
+
+The command is `devvm` from this repository (installed with `install.sh`) instead of
+`devvm/devvm.sh` in the project; project configurations in `.devvm/` work unchanged.
