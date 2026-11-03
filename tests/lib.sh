@@ -7,6 +7,9 @@
 
 # setup_env replaces HOME; the e2e tests read the real site settings from here
 REAL_HOME=$HOME
+# Likewise for the e2e settings, which setup_env would unset with the other DEVVM_*
+E2E_POOL_DIR=${DEVVM_E2E_POOL_DIR:-}
+E2E_REQUIRED=${DEVVM_E2E_REQUIRED:-}
 TESTS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(dirname "$TESTS_DIR")
 DEVVM=$ROOT/devvm

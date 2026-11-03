@@ -13,15 +13,21 @@ TESTS_VERBOSE=1
 
 step() { echo "--- $*"; }
 
+# A missing prerequisite skips the test, unless DEVVM_E2E_REQUIRED is set (in CI, where
+# a skipped e2e test would go unnoticed): then it fails
+unmet() {
+    if [ -n "$E2E_REQUIRED" ]; then fail "$*"; else skip "$*"; fi
+}
+
 e2e_prerequisites() {
-    local pool=${DEVVM_E2E_POOL_DIR:-}
-    command -v virt-install > /dev/null || skip "no virt-install"
-    [ -x /usr/libexec/virtiofsd ] || [ -x /usr/lib/qemu/virtiofsd ] || skip "no virtiofsd"
-    id -nG | tr ' ' '\n' | grep -qx libvirt || skip "not in the libvirt group"
+    local pool=$E2E_POOL_DIR
+    command -v virt-install > /dev/null || unmet "no virt-install"
+    [ -x /usr/libexec/virtiofsd ] || [ -x /usr/lib/qemu/virtiofsd ] || unmet "no virtiofsd"
+    id -nG | tr ' ' '\n' | grep -qx libvirt || unmet "not in the libvirt group"
     if [ -z "$pool" ] && [ -f "$REAL_HOME/.config/devvm/site.env" ]; then
         pool=$(. "$REAL_HOME/.config/devvm/site.env" && echo "${DEVVM_POOL_DIR:-}")
     fi
-    [ -n "$pool" ] || skip "no pool: set DEVVM_E2E_POOL_DIR or run devvm setup"
+    [ -n "$pool" ] || unmet "no pool: set DEVVM_E2E_POOL_DIR or run devvm setup"
     echo "$pool"
 }
 
