@@ -1,0 +1,22 @@
+#cloud-config
+# Placeholders (VM_NAME, VM_USER, VM_UID, VM_GID, SSH_PUBKEY between @ signs) are
+# substituted by devvm.sh. devvm.sh appends packages, the mounts of shared folders, the
+# project's provisioning script and the VM's host key, generated on the host. No host
+# credentials or secrets are passed in.
+hostname: @VM_NAME@
+# The user's primary group with the gid of the host user, created before the users
+# module runs; if that gid is taken, with any gid
+bootcmd:
+  - [sh, -c, 'getent group @VM_USER@ > /dev/null || groupadd -g @VM_GID@ @VM_USER@ || groupadd @VM_USER@']
+# Created before the user, so that it exists even if PACKAGES has no Docker
+groups: [docker]
+users:
+  - name: @VM_USER@
+    uid: @VM_UID@
+    primary_group: @VM_USER@
+    groups: [sudo, docker]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - '@SSH_PUBKEY@'
+package_update: true
