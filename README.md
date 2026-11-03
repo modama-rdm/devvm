@@ -226,20 +226,32 @@ wrong; the shared worktree keeps its state, which git can restore.
 
 ## Test runs
 
-For reproducible runs, start each from the clean snapshot and run the tests over SSH,
-best as a project command (see below), e.g. in `.devvm/commands.sh`:
+`devvm test` runs the project's tests in its VM, from the clean snapshot. Configure the
+command once, in `.devvm/config.env`:
 
 ```
-PROJECT_USAGE+="  test              reset the VM and run the tests in it"
-project_cmd_test() {
-    cmd_reset
-    vm_ssh "cd $(vm_workspace) && ./run-tests.sh"
-}
+DEVVM_TEST_COMMAND="uv run pytest"
 ```
+
+```
+devvm test                        # reset to "clean", run the tests in the checkout
+devvm test -k slow tests/unit     # arguments are passed on, quoted as given
+devvm test --no-reset ...         # without the reset, for quick iterations
+devvm test --snapshot dev ...     # from another snapshot
+devvm test --no-reset -- --x      # after --, devvm's own options go to the tests
+```
+
+`DEVVM_TEST_COMMAND` is a shell command; it runs in the checkout in the VM, in a login
+shell, so the `PATH` is that of `devvm ssh` (e.g. with `~/.local/bin` from
+provisioning). `devvm test` exits with the command's status, for use in scripts and CI.
 
 With a shared checkout, the tests see the working tree of the host, uncommitted changes
-included. To test a fixed commit instead, create the VM with `DEVVM_SHARE_WORKSPACE=0`
-and `devvm push` the commit after the reset, then run the tests in `~/<DEVVM_VM_REPO>`.
+included. In a VM created with `DEVVM_SHARE_WORKSPACE=0`, `devvm test` first pushes the
+branch checked out on the host (as `devvm push`) and runs the tests in
+`~/<DEVVM_VM_REPO>`.
+
+A project that defines its own `project_cmd_test` in `.devvm/commands.sh` keeps it:
+`devvm test` then calls that function with all arguments instead.
 
 ## Project configuration
 
@@ -251,15 +263,17 @@ project. `devvm init` creates a starting `config.env`. All files are optional:
   DEVVM_VM_PREFIX=myproject-
   DEVVM_PACKAGES="$DEVVM_PACKAGES build-essential python3-venv"
   DEVVM_RAM_MB=8192
+  DEVVM_TEST_COMMAND="uv run pytest"
   ```
 - **`provision.sh`**: runs once in a new VM, as the VM user (with passwordless `sudo`),
   after the packages are installed, from cloud-init. `devvm create` reports a failure,
   with the end of the cloud-init log. Install toolchains here, e.g. `uv` or `rustup`.
   It is copied into the VM when the VM is created; changes apply to new VMs.
-- **`commands.sh`**: project-specific commands. It is sourced by `devvm`; each
+- **`commands.sh`**: project-specific commands, for what `devvm test` (see
+  [Test runs](#test-runs)) does not cover. It is sourced by `devvm`; each
   function `project_cmd_<name>` becomes `devvm <name>` (a `-` in the command is a `_`
   in the function name), and lines appended to `PROJECT_USAGE` show up in the usage
-  text. Built-in commands take precedence. The functions can use devvm's helpers and
+  text. Built-in commands take precedence, except over `project_cmd_test`. The functions can use devvm's helpers and
   variables:
 
   | Name | |
@@ -298,3 +312,25 @@ kind.
 
 The command is `devvm` from this repository (installed with `install.sh`) instead of
 `devvm/devvm.sh` in the project.
+
+## Developing devvm
+
+devvm's own tests are in `tests/`, plain bash without further dependencies;
+`shellcheck` for linting and `python3-yaml` for some unit tests are optional (tests
+that need them are skipped):
+
+```
+tests/run.sh                  # lint and unit tests, seconds, no VM needed
+tests/run.sh e2e              # real VMs: create, ssh, test, reset, destroy; minutes
+tests/run.sh all
+tests/run.sh tests/unit/mounts.sh
+```
+
+The unit tests source `devvm`, which then defines its functions and settings without
+running a command, in a throw-away HOME and repository, and replace libvirt and SSH by
+stubs. The end-to-end tests need KVM and libvirt; they create a small VM of a throw-away
+project, with a fresh key, in your `DEVVM_POOL_DIR` (or `DEVVM_E2E_POOL_DIR`), and
+remove it afterwards.
+
+devvm is developed in its own VM: `.devvm/` makes the VM a devvm host with nested KVM.
+`devvm create` in this repository, then `devvm test [all|e2e|...]` runs the tests there.
