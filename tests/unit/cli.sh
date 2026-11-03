@@ -95,6 +95,7 @@ test_help_goes_to_stdout_with_status_0() {
 }
 
 test_unknown_command_error_comes_last() {
+    need_libvirt_group
     assert_fails "$DEVVM" frobnicate
     assert_contains "$(tail -n 1 "$TMP/out")" "Unknown command: frobnicate"
 }
