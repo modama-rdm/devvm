@@ -1,7 +1,9 @@
 # devvm
 
-Disposable libvirt/KVM virtual machines for development and tests, one per git branch
-or worktree. Like a devcontainer, but a whole machine: for Docker Compose orchestration
+libvirt/KVM virtual machines for development and tests, quick to create, reset and
+destroy, and as long-lived as you like. By default there is one per git branch or
+worktree, set up for working in the checkout from inside the VM, also with Claude Code.
+Like a devcontainer, but a whole machine: for Docker Compose orchestration
 (membership in the host's `docker` group is effectively root), privileged containers,
 kernel and system settings, system-wide installs, or a coding agent that should be free
 to do all of that, where its mistakes do not hit the host system.
@@ -103,9 +105,10 @@ which frees its RAM and CPUs and survives a host reboot; `start` restores it, wi
 running processes, and sets the guest clock. The saved state takes up to the VM's RAM
 size in libvirt's directory on the host (`/var/lib/libvirt/qemu/save`); `reset`
 discards it. `start` also continues a paused VM (`virsh suspend`, or libvirt pausing
-it, for instance on a full disk). The words are libvirt's: its `suspend` pauses in RAM. `status` shows state, IP, size, workspace and snapshots (`-v` adds
-libvirt's details). `devvm --help` prints the commands. Commands that take no
-arguments refuse them, and commands on a VM that does not exist say so.
+it, for instance on a full disk). The words are libvirt's: its `suspend` pauses in RAM.
+`status` shows state, IP, size, workspace and snapshots (`-v` adds libvirt's details).
+`devvm --help` prints the commands. Commands that take no arguments refuse them, and
+commands on a VM that does not exist say so.
 
 `reset` also sets the VM's clock, which otherwise resumes at the time of the snapshot.
 It reverts the VM's disk, including volumes, but not shared folders: they are the host's
@@ -172,7 +175,12 @@ With shared folders, the VM protects the host system, not the shared files: a
 `git clean -fdx` or `rm -rf` in the VM acts on the host checkout. Commit before letting
 an agent loose, or give it a worktree of its own.
 
-## One VM per branch or worktree
+## VM names: one per branch or worktree by default
+
+A VM lives until you destroy it: for an afternoon, or for months across many branches.
+What devvm makes easy is creating, resetting and removing them, so that a separate VM
+for an experiment or a parallel branch costs little. Only the default name follows the
+branch; how long a VM lives is up to you.
 
 The VM name defaults to `<DEVVM_VM_PREFIX><branch>` of the current checkout (characters
 other than letters and digits become `-`, so `feature/x` gives `myproject-feature-x`; on
@@ -189,9 +197,40 @@ devvm create                                   # VM myproject-feature-a
 
 The VMs have different addresses on the NAT network, so the published ports of their
 services do not collide. `devvm -n VM ...` addresses any other VM, and
-`DEVVM_VM_NAME=VM` in the environment changes the default, for instance for a long-lived
-test VM that is not tied to a branch. `devvm destroy` removes a VM when its branch is
-done; the base image is shared and stays.
+`DEVVM_VM_NAME=VM` in the environment changes the default. `devvm destroy` removes a VM
+when you are done with it; the base image is shared and stays.
+
+### Long-lived VMs
+
+A VM with a shared checkout is tied to the checkout's folder, not to a branch: after a
+`git switch` in that folder, the VM sees the files of the new branch, and its
+installed tools, containers, volumes and Claude Code login stay. What changes is the
+default name: on the new branch, `devvm` looks for a VM named after it, and says that
+there is none and how to create one. To keep working with the existing VM instead,
+name it explicitly:
+
+```
+devvm -n myproject-dev create             # once, under a name that is not a branch
+export DEVVM_VM_NAME=myproject-dev        # in this shell, all commands use it
+devvm ssh
+```
+
+A VM created on an earlier branch works the same way under the name it has, e.g.
+`export DEVVM_VM_NAME=myproject-feature-a` after switching from `feature-a` to
+`feature-b`. A tool such as [direnv](https://direnv.net/) can set `DEVVM_VM_NAME` per
+folder, in the worktree's `.envrc` (keep that out of git, e.g. in `.git/info/exclude`).
+Not in `.devvm/config.env`: that file belongs to the project, and every checkout would
+share the VM.
+
+For a VM that lives long:
+
+- `devvm snapshot -u clean` (or another name) records a state worth returning to, for
+  instance after installing tools; `reset` returns to it.
+- `devvm save` frees its RAM and CPUs between sessions, with its running processes
+  kept for the next `start`; `stop` shuts it down.
+- What `create` sets up stays as it was then: packages, `provision.sh`, mounts and
+  size. Later changes to those in `.devvm/` reach the VM by hand or through a new VM;
+  the project's commands and `DEVVM_TEST_COMMAND` apply on every call.
 
 ## Without a shared checkout: push and fetch
 
