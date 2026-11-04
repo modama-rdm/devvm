@@ -27,6 +27,7 @@ free to do all of that, while its mistakes must not hit the host [README].
 | Developer with a coding agent | Runs Claude Code in the VM with `sudo` and Docker; reviews its commits in the worktree on the host and pushes upstream from there | README, be74a09, #1 |
 | Test runner (human, script, CI) | Runs the project's tests from a known VM state and gets their exit status | 5baa2a1 |
 | Tester of a fixed commit | Keeps a long-lived VM that shares nothing with the host and receives commits by push | README, c3df199 |
+| Developer with a long-lived VM | Keeps one VM for weeks or months, across a series of branches in the same checkout, and addresses it by a name of its own | user, 2026-11-04 |
 | Host owner | Limits the size of the VMs that projects may create | 00393ca |
 | devvm developer | Develops and tests devvm inside a devvm VM, with nested VMs ("self-hosting") | 9671719, #1 |
 
@@ -34,7 +35,10 @@ free to do all of that, while its mistakes must not hit the host [README].
 
 - **F1 One VM per checkout.** The VM of a checkout is named after the project and the
   branch, so that every worktree gets its own VM, disk, snapshots and host refs. Other
-  VMs are addressed by name. [1b229a0, README]
+  VMs are addressed by name. [1b229a0, README] The name is a default, not a lifetime:
+  a VM may outlive its branch and be kept under a name of its own; the documentation
+  must not suggest otherwise (a colleague read "disposable" and "one per branch" as
+  short-lived). [user, 2026-11-04]
 - **F2 Shared checkout, like a devcontainer.** The checkout is shared read-write with
   the VM at `/workspaces/<folder>`. Files have the same owner on both sides, and commits
   made in the VM are commits in the host repository. [c3df199]
