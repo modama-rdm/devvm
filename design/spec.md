@@ -150,6 +150,10 @@ one ordinary session that asks once. A host key mismatch fails at once. Then
 elapsed times. Finally ejects the cloud-init CD-ROM: virt-install deletes the ISO, and
 a snapshot that references it cannot be reverted. [b9afb11, 4ba05da]
 
+`start` uses the same probe, with fewer tries, and counts "Permission denied" as up,
+with a hint to `ssh-add`; it used to retry until its timeout and fail, though the VM was
+up. A shut-off VM or a host key mismatch also fails at once there. [user report, 2026-11-04]
+
 ## Snapshots and reset
 
 - libvirt internal snapshots, `--atomic`, of the running VM (live), including volumes,
