@@ -1,8 +1,8 @@
 #!/bin/bash
 # A real VM through its life: create (with wait and snapshot), ssh, the hints that
 # create prints, provisioning, the shared workspace and a further shared folder (also
-# one that is missing or removed), setup-dev, snapshots, save and restore, test with
-# reset, destroy.
+# one that is missing or removed), setup-dev, snapshots, save and restore, use across
+# a branch switch, test with reset, destroy.
 #
 # Needs KVM, libvirt (member of the libvirt group), virt-install and virtiofsd. The
 # project is a small throw-away repository; the VM uses a fresh key, served by its own
@@ -180,6 +180,18 @@ EOF
     assert_contains "$("$DEVVM" status)" "State:      paused"
     assert_contains "$("$DEVVM" start)" "Resumed $name, which was paused"
     assert_eq "$("$DEVVM" ssh echo up)" up "ssh after a pause"
+
+    step "use keeps the VM across a branch switch"
+    git_q switch -q -c next
+    rc=0
+    "$DEVVM" status > "$TMP/next.log" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "status found a VM for branch next"
+    assert_contains "$(cat "$TMP/next.log")" "or keep using an existing VM: devvm use VM"
+    "$DEVVM" use "$name"
+    assert_contains "$("$DEVVM" status)" "VM:         $name (set with devvm use)"
+    "$DEVVM" ssh "test -d /workspaces/repo/.git" || fail "workspace after the switch"
+    "$DEVVM" use --clear
+    git_q switch -q main
 
     step "a shared folder removed from the host: start and reset refuse, the VM survives"
     "$DEVVM" ssh "touch /data/from-vm"

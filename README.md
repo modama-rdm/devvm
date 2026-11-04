@@ -196,31 +196,33 @@ devvm create                                   # VM myproject-feature-a
 ```
 
 The VMs have different addresses on the NAT network, so the published ports of their
-services do not collide. `devvm -n VM ...` addresses any other VM, and
-`DEVVM_VM_NAME=VM` in the environment changes the default. `devvm destroy` removes a VM
-when you are done with it; the base image is shared and stays.
+services do not collide. `devvm -n VM ...` addresses any other VM; `devvm use VM` sets
+the VM of a checkout (next section), and `DEVVM_VM_NAME=VM` in the environment that of
+a shell or script. `devvm destroy` removes a VM when you are done with it; the base
+image is shared and stays.
 
 ### Long-lived VMs
 
 A VM with a shared checkout is tied to the checkout's folder, not to a branch: after a
 `git switch` in that folder, the VM sees the files of the new branch, and its
 installed tools, containers, volumes and Claude Code login stay. What changes is the
-default name: on the new branch, `devvm` looks for a VM named after it, and says that
-there is none and how to create one. To keep working with the existing VM instead,
-name it explicitly:
+default name: on the new branch, `devvm` looks for a VM named after it, says that there
+is none, and offers to create one or to keep the existing one with `devvm use`:
 
 ```
-devvm -n myproject-dev create             # once, under a name that is not a branch
-export DEVVM_VM_NAME=myproject-dev        # in this shell, all commands use it
-devvm ssh
+git switch -c feature-b             # in the checkout whose VM is myproject-feature-a
+devvm use myproject-feature-a       # this checkout keeps that VM, on any branch
+devvm status                        # VM: myproject-feature-a (set with devvm use)
 ```
 
-A VM created on an earlier branch works the same way under the name it has, e.g.
-`export DEVVM_VM_NAME=myproject-feature-a` after switching from `feature-a` to
-`feature-b`. A tool such as [direnv](https://direnv.net/) can set `DEVVM_VM_NAME` per
-folder, in the worktree's `.envrc` (keep that out of git, e.g. in `.git/info/exclude`).
-Not in `.devvm/config.env`: that file belongs to the project, and every checkout would
-share the VM.
+For a VM meant to live long from the start, give it a name that is not a branch:
+`devvm use myproject-dev`, then `devvm create`. `devvm use` without a name shows the
+checkout's VM, `devvm use --clear` returns to the one named after the branch. The name
+is kept in the checkout's git directory (`.git/devvm-vm`, in a linked worktree
+`.git/worktrees/<name>/devvm-vm`): per worktree, never committed, and removed with the
+worktree. `-n` and `DEVVM_VM_NAME` in the environment take precedence over it. Not in
+`.devvm/config.env`: that file belongs to the project, and every checkout would share
+the VM.
 
 For a VM that lives long:
 
