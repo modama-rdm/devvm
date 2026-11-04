@@ -846,36 +846,44 @@ cmd_create() {
     next_steps
 }
 
-cmd_wait() {
-    local ip err='' start=$SECONDS rc=0
-    ip=$(require_ip)
-    echo "Waiting for SSH on $DEVVM_VM_NAME ($ip) ..."
-    # Probe without prompts: BatchMode, so that a passphrase prompt cannot block a retry
-    # loop. Permission denied means that sshd is up and checked the key, but the key
-    # needs interaction (a passphrase without ssh-agent, a security key); the rest
-    # then runs in one ordinary session that can prompt once.
-    for _ in $(seq 100); do
+# Probes SSH up to TRIES times, 3 s apart, without prompts: BatchMode, so that a
+# passphrase prompt cannot block the loop. Prints "ok" when the key works, or
+# "interactive" when sshd is up and checked the key but the key needs interaction (a
+# passphrase without ssh-agent, a security key): retrying would not change that. Fails
+# (1) with the last error printed when SSH does not answer; fails at once (2, the reason
+# already on stderr) on a host key mismatch or a VM that has shut off.
+probe_ssh() {   # TRIES
+    local err=''
+    for _ in $(seq "$1"); do
         if err=$(vm_ssh -o ConnectTimeout=5 -o BatchMode=yes true 2>&1); then
-            err=''
-            break
+            echo ok; return
         fi
         case "$err" in
             *"Host key verification failed"*|*"REMOTE HOST IDENTIFICATION"*)
-                echo "$err" >&2; exit 1 ;;   # not a timing problem, retrying will not help
+                echo "$err" >&2; return 2 ;;   # not a timing problem, retrying will not help
             *"Permission denied"*)
-                echo "SSH is up, but the key cannot be used without interaction (passphrase?)."
-                echo "Answer ssh's prompt below; loading the key with ssh-add avoids it."
-                err=''
-                break ;;
+                echo "SSH is up, but the key cannot be used without interaction (passphrase?)." >&2
+                echo interactive; return ;;
         esac
         if [ "$(virsh domstate "$DEVVM_VM_NAME")" = "shut off" ]; then
-            echo "$DEVVM_VM_NAME is shut off" >&2; exit 1
+            echo "$DEVVM_VM_NAME is shut off" >&2; return 2
         fi
         sleep 3
     done
-    if [ -n "$err" ]; then
-        echo "No SSH connection to $DEVVM_VM_NAME after $((SECONDS - start)) s; last error: $err" >&2
+    echo "$err"
+    return 1
+}
+
+cmd_wait() {
+    local ip err start=$SECONDS rc=0
+    ip=$(require_ip)
+    echo "Waiting for SSH on $DEVVM_VM_NAME ($ip) ..."
+    err=$(probe_ssh 100) || {
+        [ $? = 2 ] || echo "No SSH connection to $DEVVM_VM_NAME after $((SECONDS - start)) s; last error: $err" >&2
         exit 1
+    }
+    if [ "$err" = interactive ]; then
+        echo "Answer ssh's prompt below; loading the key with ssh-add avoids it."
     fi
     echo "SSH is up after $((SECONDS - start)) s. Waiting for cloud-init: packages and the project's"
     echo "provisioning, usually a few minutes. To watch: $PROG ssh sudo tail -f /var/log/cloud-init-output.log"
@@ -1048,16 +1056,15 @@ cmd_start() {
     check_shares start
     virsh start "$DEVVM_VM_NAME" > /dev/null
     echo "Started $DEVVM_VM_NAME, waiting for SSH ..."
-    local i
-    for i in $(seq 40); do
-        if vm_ssh -o ConnectTimeout=5 -o BatchMode=yes true 2> /dev/null; then
-            echo "$DEVVM_VM_NAME is up, at $(vm_ip)"
-            return
-        fi
-        sleep 3
-    done
-    echo "$DEVVM_VM_NAME started, but SSH does not answer yet (see: $PROG wait)" >&2
-    exit 1
+    local err
+    err=$(probe_ssh 40) || {
+        [ $? = 2 ] || echo "$DEVVM_VM_NAME started, but SSH does not answer yet (see: $PROG wait); last error: $err" >&2
+        exit 1
+    }
+    echo "$DEVVM_VM_NAME is up, at $(vm_ip)"
+    if [ "$err" = interactive ]; then
+        echo "ssh will ask for the key's passphrase; loading the key with ssh-add avoids that."
+    fi
 }
 
 # Asks the guest to shut down and waits until it has (a stuck guest: see virsh destroy)
