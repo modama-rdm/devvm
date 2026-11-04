@@ -1,7 +1,8 @@
 #!/bin/bash
 # A real VM through its life: create (with wait and snapshot), ssh, the hints that
 # create prints, provisioning, the shared workspace and a further shared folder (also
-# one that is missing or removed), setup-dev, snapshots, test with reset, destroy.
+# one that is missing or removed), setup-dev, snapshots, save and restore, test with
+# reset, destroy.
 #
 # Needs KVM, libvirt (member of the libvirt group), virt-install and virtiofsd. The
 # project is a small throw-away repository; the VM uses a fresh key, served by its own
@@ -155,6 +156,31 @@ EOF
     "$DEVVM" start
     assert_eq "$("$DEVVM" ssh echo up)" up "ssh right after start"
 
+    step "save keeps the memory, start restores it and sets the clock; reset drops it"
+    # /dev/shm is in RAM: it survives only a restore, not a boot
+    "$DEVVM" ssh "echo in-ram > /dev/shm/mark"
+    "$DEVVM" save
+    "$DEVVM" ls | grep -q "^\* $name *saved " || fail "ls does not show $name saved"
+    assert_contains "$("$DEVVM" status)" "State:      saved"
+    rc=0
+    "$DEVVM" ssh true > "$TMP/saved-ssh.log" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "ssh to a saved VM succeeded"
+    assert_contains "$(cat "$TMP/saved-ssh.log")" "is saved to disk, see: "
+    sleep 15   # let the guest clock fall behind
+    assert_contains "$("$DEVVM" start)" "Restored $name from its saved state"
+    assert_eq "$("$DEVVM" ssh cat /dev/shm/mark)" in-ram "memory after the restore"
+    out=$(( $("$DEVVM" ssh date +%s) - $(date +%s) ))
+    [ "${out#-}" -le 3 ] || fail "guest clock off by $out s after the restore"
+    "$DEVVM" save
+    assert_contains "$("$DEVVM" reset)" "Discarded the saved state"
+    virsh -c qemu:///system dominfo "$name" | grep -x 'Managed save: *no' > /dev/null ||
+        fail "a save image survived the reset"
+    "$DEVVM" ssh "test ! -e /dev/shm/mark" || fail "memory of before the reset"
+    virsh -c qemu:///system suspend "$name" > /dev/null
+    assert_contains "$("$DEVVM" status)" "State:      paused"
+    assert_contains "$("$DEVVM" start)" "Resumed $name, which was paused"
+    assert_eq "$("$DEVVM" ssh echo up)" up "ssh after a pause"
+
     step "a shared folder removed from the host: start and reset refuse, the VM survives"
     "$DEVVM" ssh "touch /data/from-vm"
     [ -e "$TMP/data/from-vm" ] || fail "file in the shared folder missing on the host"
@@ -188,7 +214,8 @@ EOF
     assert_eq "$rc" 3 "exit status of devvm test"
     assert_contains "$out" "leftover"
 
-    step "destroy"
+    step "destroy, of a saved VM"
+    "$DEVVM" save
     assert_contains "$("$DEVVM" destroy -y)" "Destroyed $name"
     rc=0
     "$DEVVM" status > "$TMP/gone.log" 2>&1 || rc=$?
