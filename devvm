@@ -922,6 +922,26 @@ snapshot_exists() {
     virsh snapshot-list "$DEVVM_VM_NAME" --name | grep -xF -- "$1" > /dev/null
 }
 
+# Name and creation time of each snapshot. Not virsh snapshot-list as it is: its State
+# column is the VM's state when the snapshot was taken, "running" for every live
+# snapshot, which reads as if each of them were a running VM. The table is parsed from
+# the right (state, then a three-field time), since a name may contain spaces.
+list_snapshots() {
+    virsh snapshot-list "$DEVVM_VM_NAME" | tail -n +3 | awk '
+        NF >= 5 {
+            name = $1
+            for (i = 2; i <= NF - 4; i++) name = name " " $i
+            n++; names[n] = name; times[n] = $(NF - 3) " " $(NF - 2) " " $(NF - 1)
+            if (length(name) > w) w = length(name)
+        }
+        END {
+            if (!n) { print "No snapshots"; exit }
+            if (w < 8) w = 8
+            printf "%-" w "s  %s\n", "Snapshot", "Taken"
+            for (i = 1; i <= n; i++) printf "%-" w "s  %s\n", names[i], times[i]
+        }'
+}
+
 # Snapshot names are used as virsh arguments; refuse option-like ones such as --help
 check_snapshot_name() {
     case "$1" in
@@ -937,7 +957,7 @@ cmd_snapshot() {
             return 0 ;;
         -l|--list)
             require_vm
-            virsh snapshot-list "$DEVVM_VM_NAME"
+            list_snapshots
             return ;;
         -d|--delete)
             shift
@@ -1019,7 +1039,7 @@ cmd_status() {
         [ -z "$src" ] || echo "Missing:    $src is shared but no longer exists (start and reset will refuse)"
     done < <(missing_shares)
     echo
-    virsh snapshot-list "$DEVVM_VM_NAME"
+    list_snapshots
     if [ -n "$verbose" ]; then
         echo
         echo "$info"

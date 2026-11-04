@@ -94,7 +94,7 @@ sits on libvirt's NAT network. Ports are reachable from the host at the VM's add
 
 Snapshots: `devvm snapshot NAME` creates one (default name "clean"; an existing name is
 refused), `snapshot -u NAME` brings an existing one up to the VM's current state,
-`snapshot -l` lists them with creation time and state, `snapshot -d NAME...` deletes
+`snapshot -l` lists them with their creation time, `snapshot -d NAME...` deletes
 them. `devvm ls` shows the snapshot names per VM.
 
 `start` boots a stopped VM and waits until SSH answers; `stop` shuts it down and waits
