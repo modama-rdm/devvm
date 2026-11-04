@@ -144,7 +144,7 @@ EOF
     "$DEVVM" snapshot -u fresh   # -u creates a missing snapshot
     "$DEVVM" snapshot -d dev fresh
     out=$("$DEVVM" snapshot -l)
-    assert_not_contains "$out" " dev "
+    assert_not_contains "$out" $'\ndev '   # one snapshot per line, after a header
     assert_not_contains "$out" "fresh"
     assert_contains "$out" "clean"
     ! "$DEVVM" snapshot -d nosuch > /dev/null 2>&1 || fail "deleting a missing snapshot succeeded"

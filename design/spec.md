@@ -157,6 +157,9 @@ a snapshot that references it cannot be reverted. [b9afb11, 4ba05da]
 - `snapshot NAME` refuses an existing name; `-u` replaces one (delete, then create;
   libvirt cannot overwrite), `-l` lists, `-d NAME...` deletes, all-or-nothing on missing
   names. [cee2fca]
+- `snapshot -l` and `status` list name and creation time, not virsh's table as it is:
+  its State column is the VM's state when the snapshot was taken, "running" for every
+  live snapshot, which read as if several VMs were running. [user report, 2026-11-04]
 - `reset [NAME]` reverts to `clean` or NAME, running, then sets the guest clock from the
   host, since it resumes at snapshot time. [4ba05da]
 
