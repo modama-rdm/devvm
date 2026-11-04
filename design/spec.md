@@ -1,7 +1,6 @@
 # devvm: specification
 
-What devvm does and why it does it that way, as of 2026-11-04 (`main` at `de906d8`,
-plus the fix for #8 in PR #9, not merged yet). Reconstructed from the same sources as [requirements.md](requirements.md),
+What devvm does and why it does it that way, as of 2026-11-04. Reconstructed from the same sources as [requirements.md](requirements.md),
 with the same brackets. User-facing details (all options, examples) are in the
 [README](../README.md); this file is the contract and the reasons.
 
@@ -118,6 +117,17 @@ Main settings: `VM_PREFIX` (default `<main repository name>-`), `VM_NAME`, `VCPU
   they end up in fstab, libvirt XML and option strings.
 - Why devcontainer conventions: users know them, and the README promises "like a
   devcontainer". [c3df199]
+- A missing source folder is an error with a way out. At `create`: the normalised path,
+  where `DEVVM_MOUNTS` is set (environment, `config.env`, `site.env` or defaults) and
+  "create the folder, or fix or remove the mount", before anything is created. Later
+  (the folder or the checkout removed on the host): `start` and `reset` (so also `test`)
+  check the sources in the VM's libvirt definition first and refuse, naming the folder
+  and the remedies (restore it, or re-create the VM without it, since shares are fixed
+  at create); `status` shows a `Missing:` line. Why: with a missing source libvirt
+  cannot start the share's virtiofsd; a failed live revert left the VM off and an
+  orphaned root virtiofsd holding its log file, so every later start failed until root
+  killed it (libvirt 11.3.0, virtiofsd 1.13.2). A running VM keeps the mount, empty and
+  not writable; nothing can prevent that. [S, 2026-11-04]
 
 ## SSH and remote execution
 
