@@ -154,6 +154,35 @@ a snapshot that references it cannot be reverted. [b9afb11, 4ba05da]
 with a hint to `ssh-add`; it used to retry until its timeout and fail, though the VM was
 up. A shut-off VM or a host key mismatch also fails at once there. [user report, 2026-11-04]
 
+## save and start
+
+From a user request (2026-11-04); the experiments behind it ran on QEMU 10.0 and
+libvirt 11.3.
+
+- Names follow libvirt, at the user's choice: `save` is `virsh managedsave` (state
+  "saved", as `virsh list --managed-save` shows it; `vm_state` derives it from
+  `dominfo`, since `domstate` says "shut off"), and `start` restores it, as `virsh
+  start` does. libvirt's `suspend` means pause in RAM. Pausing in RAM was offered and
+  not chosen: it frees only CPU, and is lost on a host reboot. Without a pause command,
+  a separate `resume` was dropped as well (user, 2026-11-04): `start` continues a VM
+  that is paused anyway (`virsh suspend`, or libvirt on a full disk), so that it means
+  "make it run" in every state.
+- Managed save works with the virtiofs shares (tested: shares and memory intact
+  after the restore). It needs disk space up to the VM's RAM in libvirt's save
+  directory on the host, outside the pool.
+- A save image survives `snapshot-revert`, and the next start restores the old memory
+  over the reverted disk (reproduced: files from before the revert came back, and
+  kernel errors). `reset` therefore removes it first. This could already happen before
+  `save` existed: the `libvirt-guests` service saves VMs this way when the host shuts
+  down. `destroy` passes `--managed-save`, without which libvirt refuses to undefine.
+- The guest clock stands still while saved or paused (measured: as far behind as the
+  pause, not corrected within seconds), so `start` after a restore or a pause sets it
+  from the host, as `reset` does.
+- `snapshot` refuses a saved VM (the snapshot would not include the saved memory);
+  `stop` leaves a saved VM as it is and says how to shut it down; `stop` resumes a
+  paused VM first, since a paused guest cannot react to the ACPI shutdown; `ssh` and
+  the commands that need the IP say "saved" or "paused" instead of waiting.
+
 ## Snapshots and reset
 
 - libvirt internal snapshots, `--atomic`, of the running VM (live), including volumes,

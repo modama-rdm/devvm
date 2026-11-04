@@ -68,7 +68,9 @@ free to do all of that, while its mistakes must not hit the host [README].
   because "logging in to claude over and over again was annoying". [be74a09, fab53b7, #1, S]
 - **F12 Installation and update** from a git clone, without root. [c071b47]
 - **F13 Lifecycle**: list, status, start, stop (both wait until done), destroy, and
-  pruning of unused base images. [4ba05da, 00393ca]
+  pruning of unused base images. [4ba05da, 00393ca] Save to disk, so that a VM frees
+  its RAM and CPUs and survives a host reboot, and restore; status and ls show the
+  state. [user request, 2026-11-04]
 
 ## Non-functional requirements
 

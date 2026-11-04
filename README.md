@@ -98,7 +98,12 @@ refused), `snapshot -u NAME` brings an existing one up to the VM's current state
 them. `devvm ls` shows the snapshot names per VM.
 
 `start` boots a stopped VM and waits until SSH answers; `stop` shuts it down and waits
-until it is off. `status` shows state, IP, size, workspace and snapshots (`-v` adds
+until it is off. `save` writes the VM's state (memory and devices) to disk and stops it,
+which frees its RAM and CPUs and survives a host reboot; `start` restores it, with
+running processes, and sets the guest clock. The saved state takes up to the VM's RAM
+size in libvirt's directory on the host (`/var/lib/libvirt/qemu/save`); `reset`
+discards it. `start` also continues a paused VM (`virsh suspend`, or libvirt pausing
+it, for instance on a full disk). The words are libvirt's: its `suspend` pauses in RAM. `status` shows state, IP, size, workspace and snapshots (`-v` adds
 libvirt's details). `devvm --help` prints the commands. Commands that take no
 arguments refuse them, and commands on a VM that does not exist say so.
 

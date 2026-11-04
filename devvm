@@ -301,8 +301,11 @@ All commands act on the VM of this checkout, ${DEVVM_VM_NAME:-none without a bra
   ssh [CMD...]      log in to the VM or run a command there
   ip                print the VM's IP address
   status [-v]       show VM state, size, workspace and snapshots; -v adds virsh's details
-  start             boot the VM and wait for SSH
+  start             boot the VM, restore a saved one, or continue a paused one; wait
+                    for SSH
   stop              shut the VM down and wait until it is off
+  save              save the VM's state to disk and stop it: frees its RAM and CPUs and
+                    survives a host reboot; start restores it
   snapshot [SNAP]   create snapshot SNAP of the VM (default: clean)
   snapshot -u [SNAP]
                     update SNAP (default: clean) to the VM's current state; creates it if missing
@@ -372,21 +375,47 @@ vm_ip() {
         awk '/ipv4/ {sub("/.*", "", $4); print $4; exit}' || true
 }
 
+# A managed save image: the VM's memory and devices, written by save (or by the
+# libvirt-guests service when the host shuts down); the next virsh start restores it
+has_managed_save() {   # [VM]
+    # No grep -q: it would exit early and the SIGPIPE to virsh fails the pipeline
+    virsh dominfo "${1:-$DEVVM_VM_NAME}" | grep -x 'Managed save: *yes' > /dev/null
+}
+
+# libvirt's state of the VM (running, paused, shut off, ...), but "saved" for a VM that
+# is shut off with a managed save image (as virsh list --managed-save calls it), which
+# the next start restores. Fails for a missing VM.
+vm_state() {   # [VM]
+    local state
+    state=$(virsh domstate "${1:-$DEVVM_VM_NAME}" 2>/dev/null) || return 1
+    if [ "$state" = "shut off" ] && has_managed_save "${1:-}"; then
+        state=saved
+    fi
+    echo "$state"
+}
+
 require_ip() {
     local ip state
     for _ in $(seq 60); do
+        if ! state=$(vm_state); then
+            echo "No VM $DEVVM_VM_NAME, see: $PROG ls" >&2
+            exit 1
+        fi
+        case $state in
+            "shut off")
+                echo "$DEVVM_VM_NAME is shut off, see /var/log/libvirt/qemu/$DEVVM_VM_NAME.log" >&2
+                exit 1 ;;
+            saved)
+                echo "$DEVVM_VM_NAME is saved to disk, see: $PROG start" >&2
+                exit 1 ;;
+            paused)   # it still has an IP, but SSH would hang
+                echo "$DEVVM_VM_NAME is paused, see: $PROG start" >&2
+                exit 1 ;;
+        esac
         ip=$(vm_ip)
         if [ -n "$ip" ]; then
             echo "$ip"
             return
-        fi
-        if ! state=$(virsh domstate "$DEVVM_VM_NAME" 2>/dev/null); then
-            echo "No VM $DEVVM_VM_NAME, see: $PROG ls" >&2
-            exit 1
-        fi
-        if [ "$state" = "shut off" ]; then
-            echo "$DEVVM_VM_NAME is shut off, see /var/log/libvirt/qemu/$DEVVM_VM_NAME.log" >&2
-            exit 1
         fi
         sleep 3
     done
@@ -966,7 +995,13 @@ cmd_snapshot() {
         echo "Snapshot \"$snap\" exists; use snapshot -u $snap to update it" >&2
         exit 1
     fi
-    [ "$(virsh domstate "$DEVVM_VM_NAME")" = running ] && eject_cdroms
+    local state
+    state=$(vm_state)
+    if [ "$state" = saved ]; then
+        echo "$DEVVM_VM_NAME is saved to disk, a snapshot would not include its memory: $PROG start first" >&2
+        exit 1
+    fi
+    [ "$state" = running ] && eject_cdroms
     if [ -n "$exists" ]; then
         # libvirt cannot overwrite a snapshot: replace it. A failure of the second step
         # leaves no snapshot of that name, so say so.
@@ -986,16 +1021,27 @@ cmd_reset() {
     require_vm
     snapshot_exists "${1:-clean}" || { echo "No snapshot \"${1:-clean}\" (see: $PROG snapshot -l)" >&2; exit 1; }
     check_shares reset
+    # A save image would survive the revert, and the next start would restore the old
+    # memory over the reverted disk: a corrupted file system
+    if has_managed_save; then
+        virsh managedsave-remove "$DEVVM_VM_NAME" > /dev/null
+        echo "Discarded the saved state of $DEVVM_VM_NAME"
+    fi
     virsh snapshot-revert "$DEVVM_VM_NAME" --snapshotname "${1:-clean}" --running > /dev/null
     echo "Reverted $DEVVM_VM_NAME to snapshot ${1:-clean}"
-    # The guest clock resumes at the time the snapshot was taken; NTP may take a while
-    # (or be unreachable), so set it from the host
+    sync_clock
+}
+
+# After a revert, the guest clock resumes at the time the snapshot was taken; after
+# a restore or a pause, at the time of save or pause. NTP may take a while (or be unreachable), and does
+# not step a large offset, so set it from the host.
+sync_clock() {
     vm_ssh -o ConnectTimeout=10 "sudo date -u -s @$(date -u +%s) > /dev/null" ||
         echo "Could not set the VM's clock, it may lag behind" >&2
 }
 
 cmd_status() {
-    local ws info verbose=
+    local ws info state verbose=
     case "${1:-}" in
         "") ;;
         -v|--verbose) verbose=1 ;;
@@ -1005,7 +1051,12 @@ cmd_status() {
     require_vm
     info=$(virsh dominfo "$DEVVM_VM_NAME")
     echo "VM:         $DEVVM_VM_NAME"
-    echo "State:      $(awk -F': +' '$1 == "State" {print $2}' <<< "$info")"
+    state=$(vm_state)
+    case $state in
+        saved) state="saved (to disk; $PROG start restores it)" ;;
+        paused) state="paused (see: $PROG start)" ;;
+    esac
+    echo "State:      $state"
     echo "IP:         $(vm_ip || true)"
     echo "Size:       $(awk -F': +' '$1 == "CPU(s)" {c = $2} $1 == "Max memory" {split($2, m, " "); r = int(m[1] / 1024)} END {print c " vCPUs, " r " MB RAM"}' <<< "$info")"
     ws=$(vm_workspace)
@@ -1039,7 +1090,7 @@ cmd_destroy() {
     fi
     snaps=$(virsh snapshot-list "$DEVVM_VM_NAME" --name | grep -c . || true)
     virsh destroy "$DEVVM_VM_NAME" &>/dev/null || true
-    virsh undefine "$DEVVM_VM_NAME" --snapshots-metadata --remove-all-storage > /dev/null
+    virsh undefine "$DEVVM_VM_NAME" --managed-save --snapshots-metadata --remove-all-storage > /dev/null
     # The host key stays: a VM re-created under this name keeps its identity
     rm -f "$KNOWN_HOSTS"
     echo "Destroyed $DEVVM_VM_NAME: the disk and $snaps snapshot(s) are removed"
@@ -1048,17 +1099,34 @@ cmd_destroy() {
 cmd_start() {
     local state
     require_vm
-    state=$(virsh domstate "$DEVVM_VM_NAME")
-    if [ "$state" != "shut off" ]; then
-        echo "$DEVVM_VM_NAME is $state, not shut off"
-        return
-    fi
+    state=$(vm_state)
+    case $state in
+        saved|"shut off") ;;
+        paused)   # by virsh suspend, or by libvirt, e.g. on a full disk
+            virsh resume "$DEVVM_VM_NAME" > /dev/null
+            echo "Resumed $DEVVM_VM_NAME, which was paused"
+            await_ssh resumed
+            sync_clock
+            return ;;
+        *) echo "$DEVVM_VM_NAME is $state, not shut off"; return ;;
+    esac
     check_shares start
     virsh start "$DEVVM_VM_NAME" > /dev/null
-    echo "Started $DEVVM_VM_NAME, waiting for SSH ..."
+    if [ "$state" = saved ]; then
+        echo "Restored $DEVVM_VM_NAME from its saved state, waiting for SSH ..."
+        await_ssh restored
+        sync_clock
+    else
+        echo "Started $DEVVM_VM_NAME, waiting for SSH ..."
+        await_ssh started
+    fi
+}
+
+# After a boot, restore or resume: wait until SSH answers, and say so
+await_ssh() {   # WHAT (started, restored, resumed)
     local err
     err=$(probe_ssh 40) || {
-        [ $? = 2 ] || echo "$DEVVM_VM_NAME started, but SSH does not answer yet (see: $PROG wait); last error: $err" >&2
+        [ $? = 2 ] || echo "$DEVVM_VM_NAME $1, but SSH does not answer yet (see: $PROG wait); last error: $err" >&2
         exit 1
     }
     echo "$DEVVM_VM_NAME is up, at $(vm_ip)"
@@ -1067,14 +1135,35 @@ cmd_start() {
     fi
 }
 
+# Save to disk, libvirt's managed save: writes memory and device state to
+# /var/lib/libvirt/qemu/save and stops the VM, which frees its RAM and CPUs and survives
+# a host reboot. The next start restores it.
+cmd_save() {
+    local state
+    require_vm
+    state=$(vm_state)
+    case $state in
+        saved) echo "$DEVVM_VM_NAME is already saved"; return ;;
+        "shut off") echo "$DEVVM_VM_NAME is shut off, nothing to save"; return ;;
+        running|paused) ;;
+        *) echo "$DEVVM_VM_NAME is $state, cannot save it" >&2; exit 1 ;;
+    esac
+    echo "Saving the state of $DEVVM_VM_NAME to disk ..."
+    virsh managedsave "$DEVVM_VM_NAME" --running > /dev/null
+    echo "$DEVVM_VM_NAME is saved and stopped; $PROG start restores it"
+}
+
 # Asks the guest to shut down and waits until it has (a stuck guest: see virsh destroy)
 cmd_stop() {
     local i
     require_vm
-    if [ "$(virsh domstate "$DEVVM_VM_NAME")" = "shut off" ]; then
-        echo "$DEVVM_VM_NAME is already shut off"
-        return
-    fi
+    case $(vm_state) in
+        "shut off") echo "$DEVVM_VM_NAME is already shut off"; return ;;
+        saved)
+            echo "$DEVVM_VM_NAME is saved to disk, not running. To shut it down: $PROG start, then $PROG stop"
+            return ;;
+        paused) virsh resume "$DEVVM_VM_NAME" > /dev/null ;;   # a paused guest ignores ACPI
+    esac
     virsh shutdown "$DEVVM_VM_NAME" > /dev/null
     echo "Shutting down $DEVVM_VM_NAME ..."
     for i in $(seq 60); do
@@ -1106,7 +1195,7 @@ cmd_ls() {
     printf '  %-28s %-10s %-16s %6s  %s\n' VM STATE IP USED SNAPSHOTS
     while read -r name; do
         [ -n "$name" ] || continue
-        state=$(virsh domstate "$name")
+        state=$(vm_state "$name")
         ip=$(vm_ip "$name")
         size=$(du -h "$DEVVM_POOL_DIR/$name.qcow2" 2>/dev/null | cut -f1 || true)
         snaps=$(virsh snapshot-list "$name" --name | grep . | paste -sd, - | sed 's/,/, /g' || true)
@@ -1269,6 +1358,7 @@ case "${1:-}" in
     status) shift; cmd_status "$@" ;;
     start) no_args start "${@:2}"; cmd_start ;;
     stop) no_args stop "${@:2}"; cmd_stop ;;
+    save) no_args save "${@:2}"; cmd_save ;;
     snapshot) shift; cmd_snapshot "$@" ;;
     reset) shift; cmd_reset "$@" ;;
     destroy) shift; cmd_destroy "$@" ;;
