@@ -197,6 +197,8 @@ fi
 
 # Exported variables are overrides from the environment; re-apply them after sourcing
 saved_env=$(export -p)
+ENV_VM_NAME=   # only if exported: a re-sourced devvm (unit tests) has its own from before
+if [ -n "${DEVVM_VM_NAME:-}" ] && [[ ${DEVVM_VM_NAME@a} == *x* ]]; then ENV_VM_NAME=$DEVVM_VM_NAME; fi
 # shellcheck source=defaults.env
 source "$HERE/defaults.env"
 if [ -f "$SITE_ENV" ]; then
@@ -216,27 +218,50 @@ if [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/config.env" ]; then
 fi
 eval "$site_limits"
 eval "$saved_env"
-[ -n "$OPT_VM_NAME" ] && DEVVM_VM_NAME=$OPT_VM_NAME
 if [ -n "$REPO_ROOT" ]; then
     : "${DEVVM_VM_REPO:=$(repo_name)}"
     : "${DEVVM_VM_PREFIX:=$(default_prefix)}"
 fi
 
-# One VM per checkout: the name defaults to the branch of the current directory, so
-# every worktree gets its own VM with its own disk, snapshots and host refs.
-# Without a branch (detached HEAD, or not in a repository) there is no default, and
-# only the usage text and ls work without -n.
-if [ -z "${DEVVM_VM_NAME:-}" ]; then
-    branch=
+# The VM that devvm use set for this checkout: a file in the checkout's own git
+# directory (.git, or .git/worktrees/<name> of a linked worktree), so it is per
+# worktree, never committed, and goes with the worktree. Not git config --worktree:
+# that needs extensions.worktreeConfig, which some git tools do not understand.
+USE_FILE=
+[ -z "$REPO_ROOT" ] || USE_FILE=$(as_user git -C "$REPO_ROOT" rev-parse --absolute-git-dir)/devvm-vm
+used_vm() {
+    [ -n "$USE_FILE" ] && [ -s "$USE_FILE" ] && head -n 1 "$USE_FILE"
+}
+
+# The VM named after the branch of this checkout; empty without a branch
+branch_vm() {
+    local branch=
     [ -n "$REPO_ROOT" ] && branch=$(as_user git -C "$REPO_ROOT" symbolic-ref --short -q HEAD || true)
-    if [ -n "$branch" ]; then
-        DEVVM_VM_NAME=$DEVVM_VM_PREFIX$(tr -c 'A-Za-z0-9\n' '-' <<< "$branch")
-    else
+    [ -z "$branch" ] || echo "$DEVVM_VM_PREFIX$(tr -c 'A-Za-z0-9\n' '-' <<< "$branch")"
+}
+
+# The VM to act on, first match: -n, DEVVM_VM_NAME in the environment, devvm use for
+# this checkout, DEVVM_VM_NAME in the settings, the branch. VM_NAME_FROM says which.
+# By default one VM per checkout: every worktree gets its own VM with its own disk,
+# snapshots and host refs. Without a branch (detached HEAD, or not in a repository)
+# there is no default, and only the usage text, ls and use work without -n.
+if [ -n "$OPT_VM_NAME" ]; then
+    DEVVM_VM_NAME=$OPT_VM_NAME VM_NAME_FROM=option
+elif [ -n "$ENV_VM_NAME" ]; then
+    VM_NAME_FROM=environment
+elif used=$(used_vm); then
+    DEVVM_VM_NAME=$used VM_NAME_FROM=checkout
+elif [ -n "${DEVVM_VM_NAME:-}" ]; then
+    VM_NAME_FROM=settings
+else
+    VM_NAME_FROM=branch
+    DEVVM_VM_NAME=$(branch_vm)
+    if [ -z "$DEVVM_VM_NAME" ]; then
         case "${1:-}" in
-            ""|ls) DEVVM_VM_NAME= ;;
+            ""|ls|use) ;;
             *)
                 if [ -n "$REPO_ROOT" ]; then
-                    echo "Detached HEAD, no default VM: pass -n VM (see: $PROG ls)" >&2
+                    echo "Detached HEAD, no default VM: pass -n VM, or set one with: $PROG use VM (see: $PROG ls)" >&2
                 else
                     echo "Not in a git repository, no default VM: pass -n VM (see: $PROG ls -a)" >&2
                 fi
@@ -284,7 +309,8 @@ Usage: $PROG [-n VM] COMMAND [ARGS]
 
 Project: ${REPO_ROOT:-none (not in a git repository)}
 All commands act on the VM of this checkout, ${DEVVM_VM_NAME:-none without a branch}, unless -n VM
-(long form --vm VM, or DEVVM_VM_NAME=VM in the environment) selects another one.
+(long form --vm VM, or DEVVM_VM_NAME=VM in the environment) selects another one. It is
+named after the branch, unless set with: $PROG use VM
 
   setup             write the site settings to ~/.config/devvm/site.env
   init              create .devvm/config.env for the project
@@ -293,6 +319,8 @@ All commands act on the VM of this checkout, ${DEVVM_VM_NAME:-none without a bra
   help | -h | --help  this text
   ls [-a]           list the VMs of this project, with -a all VMs on this host;
                     * marks the one of this checkout
+  use [VM|--clear]  set the VM of this checkout, instead of the one named after the
+                    branch (e.g. to keep a VM across branches); without VM: show it
   create [--no-wait]
                     download base image, create and start the VM; shares this checkout
                     at $DEVVM_WORKSPACE_ROOT/<folder> unless DEVVM_SHARE_WORKSPACE=0, and DEVVM_MOUNTS;
@@ -340,13 +368,19 @@ require_repo() {
 }
 
 # The VM must exist: one message instead of libvirt's "failed to get domain"
+vm_exists() {
+    virsh list --all --name | grep -xF -- "${1:-$DEVVM_VM_NAME}" > /dev/null
+}
+
+# One line, which depends on where the name came from (VM_NAME_FROM)
 require_vm() {
-    virsh list --all --name | grep -xF -- "$DEVVM_VM_NAME" > /dev/null && return
-    if [ -n "$OPT_VM_NAME" ]; then
-        echo "No VM $DEVVM_VM_NAME (see: $PROG ls -a)" >&2
-    else
-        echo "No VM $DEVVM_VM_NAME for this checkout. Create it with: $PROG create" >&2
-    fi
+    vm_exists && return
+    case $VM_NAME_FROM in
+        option) echo "No VM $DEVVM_VM_NAME (see: $PROG ls -a)" >&2 ;;
+        checkout) echo "No VM $DEVVM_VM_NAME, which this checkout uses (set with $PROG use). Create it with: $PROG create, or use another one: $PROG use VM" >&2 ;;
+        branch) echo "No VM $DEVVM_VM_NAME for this checkout. Create it with: $PROG create, or keep using an existing VM: $PROG use VM (see: $PROG ls)" >&2 ;;
+        *) echo "No VM $DEVVM_VM_NAME (from DEVVM_VM_NAME). Create it with: $PROG create (see: $PROG ls)" >&2 ;;
+    esac
     exit 1
 }
 
@@ -1070,7 +1104,7 @@ cmd_status() {
     [ $# -le 1 ] || { echo "status takes at most one option, got: $*" >&2; exit 1; }
     require_vm
     info=$(virsh dominfo "$DEVVM_VM_NAME")
-    echo "VM:         $DEVVM_VM_NAME"
+    echo "VM:         $DEVVM_VM_NAME$( [ "$VM_NAME_FROM" != checkout ] || echo " (set with $PROG use)")"
     state=$(vm_state)
     case $state in
         saved) state="saved (to disk; $PROG start restores it)" ;;
@@ -1195,6 +1229,43 @@ cmd_stop() {
     done
     echo "$DEVVM_VM_NAME is still shutting down after 2 minutes" >&2
     exit 1
+}
+
+# The VM of this checkout, instead of the one named after the branch: for a VM that
+# outlives its branch
+cmd_use() {
+    [ -n "$REPO_ROOT" ] || { echo "Not in a git repository: use sets the VM of a checkout" >&2; exit 1; }
+    [ -z "$OPT_VM_NAME" ] || { echo "use takes the VM name as its argument, not with -n" >&2; exit 1; }
+    [ $# -le 1 ] || { echo "use takes at most one VM name, got: $*" >&2; exit 1; }
+    local name default
+    default=$(branch_vm)
+    case "${1:-}" in
+        "")
+            if name=$(used_vm); then
+                echo "This checkout uses VM $name (set with $PROG use; $PROG use --clear returns to the branch's VM${default:+ $default})"
+            elif [ -n "$default" ]; then
+                echo "This checkout uses the VM named after its branch, $default; $PROG use VM sets another one"
+            else
+                echo "This checkout has no VM: no branch, and none set with $PROG use VM"
+            fi ;;
+        --clear)
+            rm -f "$USE_FILE"
+            if [ -n "$default" ]; then
+                echo "This checkout uses the VM named after its branch again, $default"
+            else
+                echo "This checkout has no VM set any more (and no branch)"
+            fi ;;
+        -*) echo "Unknown option for use: $1 (only --clear)" >&2; exit 1 ;;
+        *)
+            [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "Invalid VM name: $1" >&2; exit 1; }
+            echo "$1" | as_user tee "$USE_FILE" > /dev/null
+            echo "This checkout uses VM $1"
+            vm_exists "$1" || echo "$1 does not exist yet; $PROG create creates it"
+            ;;
+    esac
+    if [ -n "$ENV_VM_NAME" ]; then
+        echo "Note: DEVVM_VM_NAME=$ENV_VM_NAME in the environment takes precedence"
+    fi
 }
 
 cmd_ls() {
@@ -1371,6 +1442,7 @@ fi
 
 case "${1:-}" in
     ls) shift; cmd_ls "$@" ;;
+    use) shift; cmd_use "$@" ;;
     create) shift; cmd_create "$@" ;;
     wait) no_args wait "${@:2}"; require_vm; cmd_wait ;;
     ssh) shift; require_vm; vm_ssh "$@" ;;

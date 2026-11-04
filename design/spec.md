@@ -42,10 +42,20 @@ Main settings: `VM_PREFIX` (default `<main repository name>-`), `VM_NAME`, `VCPU
 
 ## VM identity and naming
 
-- Name: `-n VM`, else `DEVVM_VM_NAME`, else `<prefix><branch>` with every character
-  other than `[A-Za-z0-9]` replaced by `-`. A detached HEAD or no repository gives no
-  default; only usage and `ls` work then [4ba05da]: a fixed fallback such as
-  `modama-HEAD` would be shared by every detached checkout.
+- Name: `-n VM`, else `DEVVM_VM_NAME` exported in the environment, else the name `devvm
+  use` set for the checkout, else `DEVVM_VM_NAME` from the settings, else
+  `<prefix><branch>` with every character other than `[A-Za-z0-9]` replaced by `-`. A
+  detached HEAD or no repository gives no default; only usage, `ls` and `use` work then
+  [4ba05da]: a fixed fallback such as `modama-HEAD` would be shared by every detached
+  checkout.
+- `use` is for a VM that outlives its branch (user, 2026-11-04: a series of branches in
+  one checkout, one VM). The name is a file `devvm-vm` in the checkout's own git
+  directory (`git rev-parse --absolute-git-dir`): per worktree, untracked, removed with
+  the worktree. Not `git config --worktree`: that needs `extensions.worktreeConfig`,
+  which some git tools do not support and then refuse the repository. It ranks below
+  the environment, so that a script's `DEVVM_VM_NAME` still wins, and above the
+  settings, since it is the more specific choice. The message for a missing VM depends
+  on where its name came from, and offers `use` when the name came from the branch.
 - The prefix comes from the *main* repository's name, also in a linked worktree, so
   that all worktrees of a project list together.
 - The name must match `^[A-Za-z0-9][A-Za-z0-9_.-]*$`: it is a libvirt domain, a file
