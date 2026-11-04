@@ -87,7 +87,9 @@ free to do all of that, while its mistakes must not hit the host [README].
   how to skip it; devvm's own words instead of virsh's output. [HT, 00393ca, a15003f]
 - **N6 Fail early and loudly**: commands on a missing VM fail at once, not after
   timeouts; failed provisioning makes `create` fail, with the end of the log; a waiting
-  command says what it waits for. [4ba05da, b9afb11]
+  command says what it waits for. A missing mount source triggers "an actionable error
+  message and abort", whose remedy is to "remove the setting or fix the path", at
+  `create` and before libvirt starts or reverts the VM. [4ba05da, b9afb11, S]
 - **N7 Few dependencies**: bash, git, libvirt, `virt-install`, `qemu-img`, and
   `virtiofsd` for shares. The tests are plain bash; `shellcheck` and `python3-yaml` are
   optional. [README]

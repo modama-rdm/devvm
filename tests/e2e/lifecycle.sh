@@ -1,7 +1,7 @@
 #!/bin/bash
 # A real VM through its life: create (with wait and snapshot), ssh, the hints that
-# create prints, provisioning, the shared workspace, setup-dev, snapshots, test with
-# reset, destroy.
+# create prints, provisioning, the shared workspace and a further shared folder (also
+# one that is missing or removed), setup-dev, snapshots, test with reset, destroy.
 #
 # Needs KVM, libvirt (member of the libvirt group), virt-install and virtiofsd. The
 # project is a small throw-away repository; the VM uses a fresh key, served by its own
@@ -46,6 +46,7 @@ DEVVM_VCPUS=2
 DEVVM_RAM_MB=2048
 DEVVM_DISK_GB=8
 DEVVM_TEST_COMMAND=./run.sh
+DEVVM_MOUNTS='source=../data,target=/data'
 EOF
     cat > .devvm/provision.sh <<'EOF'
 #!/bin/bash
@@ -78,6 +79,14 @@ EOF
     [ "$rc" -ne 0 ] || fail "create ignored DEVVM_MAX_RAM_MB"
     assert_contains "$(cat "$TMP/limit.log")" "is above this site's limit DEVVM_MAX_RAM_MB=512"
     ! virsh -c qemu:///system dominfo "$name" > /dev/null 2>&1 || fail "$name was created"
+
+    step "a missing mount source is refused, before anything is created"
+    rc=0
+    "$DEVVM" create > "$TMP/nodata.log" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "create ignored the missing mount source"
+    assert_contains "$(cat "$TMP/nodata.log")" "No folder $TMP/data for the mount"
+    ! virsh -c qemu:///system dominfo "$name" > /dev/null 2>&1 || fail "$name was created"
+    mkdir "$TMP/data"
 
     step "create $name"
     # tee would hide create's exit status: take it from PIPESTATUS
@@ -145,6 +154,25 @@ EOF
     assert_contains "$("$DEVVM" status)" "State:      shut off"
     "$DEVVM" start
     assert_eq "$("$DEVVM" ssh echo up)" up "ssh right after start"
+
+    step "a shared folder removed from the host: start and reset refuse, the VM survives"
+    "$DEVVM" ssh "touch /data/from-vm"
+    [ -e "$TMP/data/from-vm" ] || fail "file in the shared folder missing on the host"
+    mv "$TMP/data" "$TMP/data.away"
+    assert_contains "$("$DEVVM" status)" "Missing:    $TMP/data is shared but no longer exists"
+    rc=0
+    "$DEVVM" reset > "$TMP/gone-reset.log" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "reset with a missing shared folder succeeded"
+    assert_contains "$(cat "$TMP/gone-reset.log")" "Cannot reset $name: the folder $TMP/data"
+    assert_contains "$("$DEVVM" status)" "State:      running"
+    "$DEVVM" stop
+    rc=0
+    "$DEVVM" start > "$TMP/gone-start.log" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "start with a missing shared folder succeeded"
+    assert_contains "$(cat "$TMP/gone-start.log")" "Cannot start $name: the folder $TMP/data"
+    mv "$TMP/data.away" "$TMP/data"
+    "$DEVVM" start
+    assert_eq "$("$DEVVM" ssh ls /data)" from-vm "shared folder after the restore"
 
     step "test: reset, arguments, login shell"
     "$DEVVM" ssh "touch leftover"

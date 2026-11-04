@@ -545,7 +545,12 @@ plan_mounts() {
                     /*) ;;
                     *) require_repo; src=$REPO_ROOT/$src ;;
                 esac
-                [ -d "$src" ] || { echo "No folder $src for mount: $spec" >&2; exit 1; }
+                if [ ! -d "$src" ]; then
+                    echo "No folder $(realpath -m "$src") for the mount $spec" >&2
+                    echo "in DEVVM_MOUNTS, set in $(setting_origin DEVVM_MOUNTS)." >&2
+                    echo "Create the folder, or fix or remove the mount there." >&2
+                    exit 1
+                fi
                 n=$((n + 1))
                 add_fs "devvm-m$n" "$(realpath "$src")" "$tgt" "$ro" ;;
             volume)
@@ -557,6 +562,58 @@ plan_mounts() {
             *) echo "Unsupported type $type in mount: $spec" >&2; exit 1 ;;
         esac
     done
+}
+
+# Where a setting comes from, for messages: the last of the sources that sets it
+setting_origin() {
+    local f
+    if grep -q "^declare -x $1=" <<< "$saved_env"; then
+        echo "the environment"
+        return
+    fi
+    for f in ${PROJECT_DIR:+"$PROJECT_DIR/config.env"} "$SITE_ENV"; do
+        if [ -f "$f" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$1=" "$f"; then
+            echo "$f"
+            return
+        fi
+    done
+    echo "$HERE/defaults.env"
+}
+
+# The shared folders in the VM's definition, "TAG SOURCE" per line
+vm_shares() {
+    virsh dumpxml --inactive "$DEVVM_VM_NAME" | awk -F"'" '
+        /<filesystem/ { fs = 1; tag = ""; src = "" }
+        fs && /<source dir=/ { src = $2 }
+        fs && /<target dir=/ { tag = $2 }
+        /<\/filesystem>/ { fs = 0; print tag, src }'
+}
+
+# The shared folders whose source on the host is gone, "TAG SOURCE" per line
+missing_shares() {
+    local tag src
+    while read -r tag src; do
+        [ -z "$src" ] || [ -d "$src" ] || echo "$tag $src"
+    done < <(vm_shares)
+}
+
+# libvirt starts a virtiofsd per share when it starts or reverts the VM. With a source
+# missing, that fails with libvirt's words, and a failed revert may leave the VM off and
+# an orphaned virtiofsd that blocks every later start. So check first, and say what to do.
+check_shares() {   # WHAT (start, reset, ...)
+    local tag src missing
+    missing=$(missing_shares)
+    [ -n "$missing" ] || return 0
+    while read -r tag src; do
+        case $tag in
+            devvm-ws) echo "Cannot $1 $DEVVM_VM_NAME: its shared checkout $src no longer exists." >&2 ;;
+            devvm-git) echo "Cannot $1 $DEVVM_VM_NAME: the shared git directory $src no longer exists." >&2 ;;
+            *) echo "Cannot $1 $DEVVM_VM_NAME: the folder $src of its DEVVM_MOUNTS no longer exists." >&2 ;;
+        esac
+    done <<< "$missing"
+    echo "Restore it, or remove the VM ($PROG -n $DEVVM_VM_NAME destroy): shared folders are" >&2
+    echo "fixed when a VM is created; to drop a mount, re-create the VM without it." >&2
+    exit 1
 }
 
 # Runs first in the new VM, as root: mounts, recorded in fstab for later boots. Mount
@@ -920,6 +977,7 @@ cmd_reset() {
     check_snapshot_name "${1:-clean}"
     require_vm
     snapshot_exists "${1:-clean}" || { echo "No snapshot \"${1:-clean}\" (see: $PROG snapshot -l)" >&2; exit 1; }
+    check_shares reset
     virsh snapshot-revert "$DEVVM_VM_NAME" --snapshotname "${1:-clean}" --running > /dev/null
     echo "Reverted $DEVVM_VM_NAME to snapshot ${1:-clean}"
     # The guest clock resumes at the time the snapshot was taken; NTP may take a while
@@ -948,6 +1006,10 @@ cmd_status() {
     else
         echo "Workspace:  ~/$DEVVM_VM_REPO, by push and fetch"
     fi
+    local tag src
+    while read -r tag src; do
+        [ -z "$src" ] || echo "Missing:    $src is shared but no longer exists (start and reset will refuse)"
+    done < <(missing_shares)
     echo
     virsh snapshot-list "$DEVVM_VM_NAME"
     if [ -n "$verbose" ]; then
@@ -983,6 +1045,7 @@ cmd_start() {
         echo "$DEVVM_VM_NAME is $state, not shut off"
         return
     fi
+    check_shares start
     virsh start "$DEVVM_VM_NAME" > /dev/null
     echo "Started $DEVVM_VM_NAME, waiting for SSH ..."
     local i

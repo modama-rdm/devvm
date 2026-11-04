@@ -148,7 +148,13 @@ source=build,target=build,type=volume
   `${localWorkspaceFolderBasename}`, `${containerWorkspaceFolder}` and
   `${localEnv:VAR}` are substituted; use single quotes in `config.env`.
 
-Mounts are set up when the VM is created; to change them, re-create it. The share does
+Mounts are set up when the VM is created; to change them, re-create it. `create` refuses
+a mount whose source folder does not exist and says where `DEVVM_MOUNTS` is set. A shared
+folder removed on the host later (a mount source, or the checkout itself) stays mounted
+in a running VM, but empty and not writable; `status` flags it, and `start`, `reset` and
+`test` refuse until the folder is back or the VM is re-created without it. libvirt
+could not start the VM's virtiofsd without the folder, and a failed `reset` could leave
+the VM off with an orphaned virtiofsd that blocks every later start. The share does
 not support POSIX ACLs (`setfacl`) or `chattr`: libvirt starts virtiofsd without
 `--posix-acl`, and AppArmor does not allow another binary. Put what needs them on a
 volume. The guest memory is shared with virtiofsd, which libvirt sets up

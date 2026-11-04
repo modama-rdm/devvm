@@ -1,6 +1,6 @@
 #!/bin/bash
 # Shared folders and volumes: plan_mounts, check_path, expand_vars
-# shellcheck disable=SC1090,SC2034
+# shellcheck disable=SC1090,SC2034,SC2317  # SC2317: stubs, called indirectly
 # shellcheck source=tests/lib.sh
 . "$(dirname "$0")/../lib.sh"
 
@@ -58,7 +58,6 @@ test_linked_worktree_with_submodules_in_vm() {
     cd "$TMP"
     mkdir workspaces
     mv wt workspaces/
-    # shellcheck disable=SC2317  # called by the eval below
     mkpoint() { mkdir -p "$1"; }
     eval "$(guest_git_links)"
     cd "$GUEST_WS"
@@ -72,6 +71,82 @@ test_linked_worktree_with_submodules_in_vm() {
     assert_eq "$GIT_MIRROR" "$TMP/workspaces/repo/.git"
     # A second run of setup.sh leaves the links alone
     eval "$(guest_git_links)"
+}
+
+test_missing_mount_source_says_where_it_is_set() {
+    mkdir .devvm
+    echo "DEVVM_MOUNTS='source=../pyxdg,target=/workspaces/pyxdg'" > .devvm/config.env
+    . "$DEVVM"
+    assert_fails plan_mounts
+    assert_contains "$(cat "$TMP/out")" "No folder $TMP/pyxdg for the mount source=../pyxdg,"
+    assert_contains "$(cat "$TMP/out")" "set in $PWD/.devvm/config.env."
+    assert_contains "$(cat "$TMP/out")" "Create the folder, or fix or remove the mount there."
+    # From the environment, which overrides the project's setting
+    export DEVVM_MOUNTS=source=/no/such/dir,target=/x
+    . "$DEVVM"
+    assert_fails plan_mounts
+    assert_contains "$(cat "$TMP/out")" "No folder /no/such/dir for the mount"
+    assert_contains "$(cat "$TMP/out")" "set in the environment."
+}
+
+# A VM whose definition shares the checkout and $TMP/data; virsh logs what it is asked
+stub_vm_with_shares() {
+    require_vm() { :; }
+    vm_ssh() { :; }
+    vm_ip() { echo 192.0.2.1; }
+    virsh() {
+        echo "$*" >> "$TMP/calls"
+        case $1 in
+            dumpxml) cat <<EOF ;;
+<domain type='kvm'>
+  <devices>
+    <disk type='file' device='disk'>
+      <source file='$TMP/pool/repo-main.qcow2'/>
+    </disk>
+    <filesystem type='mount' accessmode='passthrough'>
+      <driver type='virtiofs'/>
+      <source dir='$TMP/repo'/>
+      <target dir='devvm-ws'/>
+    </filesystem>
+    <filesystem type='mount' accessmode='passthrough'>
+      <driver type='virtiofs'/>
+      <source dir='$TMP/data'/>
+      <target dir='devvm-m1'/>
+      <readonly/>
+    </filesystem>
+  </devices>
+</domain>
+EOF
+            domstate) echo "shut off" ;;
+            snapshot-list) echo clean ;;
+        esac
+    }
+    : > "$TMP/calls"
+}
+
+test_start_and_reset_refuse_when_a_shared_folder_is_gone() {
+    . "$DEVVM"
+    stub_vm_with_shares
+    assert_eq "$(vm_shares)" "devvm-ws $TMP/repo
+devvm-m1 $TMP/data"
+    assert_eq "$(missing_shares)" "devvm-m1 $TMP/data"
+    for c in cmd_start cmd_reset; do
+        assert_fails "$c"
+        assert_contains "$(cat "$TMP/out")" "the folder $TMP/data of its DEVVM_MOUNTS no longer exists"
+        assert_contains "$(cat "$TMP/out")" "re-create the VM without it"
+    done
+    assert_not_contains "$(cat "$TMP/calls")" "start repo-main"
+    assert_not_contains "$(cat "$TMP/calls")" "snapshot-revert"
+    # The checkout itself, e.g. a removed worktree
+    mkdir "$TMP/data"
+    mv "$TMP/repo" "$TMP/moved"
+    assert_fails cmd_start
+    assert_contains "$(cat "$TMP/out")" "its shared checkout $TMP/repo no longer exists"
+    # All there: libvirt is asked
+    mv "$TMP/moved" "$TMP/repo"
+    assert_eq "$(missing_shares)" ""
+    cmd_reset > /dev/null
+    assert_contains "$(cat "$TMP/calls")" "snapshot-revert"
 }
 
 test_variables_in_mounts() {
