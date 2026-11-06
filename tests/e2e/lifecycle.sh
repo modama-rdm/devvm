@@ -120,11 +120,17 @@ EOF
     "$DEVVM" ssh "touch /workspaces/repo/from-vm"
     [ -O from-vm ] || fail "file from the VM missing or not owned by $(id -un)"
 
-    step "setup-dev: screenshot tools and the kaizen plugin"
+    step "setup-dev: screenshot tools, kaizen and its companions"
     "$DEVVM" setup-dev
     "$DEVVM" ssh dpkg -s xvfb xterm xdotool imagemagick > /dev/null || fail "tools not installed"
     # shellcheck disable=SC2088  # the VM's shell expands the tilde
-    assert_contains "$("$DEVVM" ssh '~/.local/bin/claude plugin list')" "kaizen@uellue"
+    plugins=$("$DEVVM" ssh '~/.local/bin/claude plugin list')
+    assert_contains "$plugins" "kaizen@uellue"
+    assert_contains "$plugins" "mattpocock-skills@mattpocock"
+    # shellcheck disable=SC2016  # expanded in the VM
+    "$DEVVM" ssh 'PATH=~/.local/bin:$PATH openspec --version' > /dev/null || fail "openspec missing"
+    # shellcheck disable=SC2016
+    assert_eq "$("$DEVVM" ssh 'echo "$OPENSPEC_TELEMETRY"')" "0"
 
     step "snapshots: create, list, refuse duplicate, update, reset, delete"
     "$DEVVM" ssh "echo v1 > snapmark"

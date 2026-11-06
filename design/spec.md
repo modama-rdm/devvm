@@ -244,6 +244,20 @@ takes precedence, since it predates the built-in command.
   missing, Claude Code with the official installer into `~/.local/bin`, and the
   `kaizen` plugin from the `uellue/skills` marketplace at user scope; each step is
   skipped when done. [fab53b7]
+- Then the two companions kaizen's README recommends [owner, 2026-11-06]: the
+  `mattpocock-skills` plugin from the `mattpocock/skills` marketplace at user scope, and
+  OpenSpec (`npm install -g @fission-ai/openspec`, latest) into `~/.local`. OpenSpec needs
+  Node.js >= 22.12 and Debian 13's is older: the latest 22 LTS tarball from nodejs.org,
+  checked against its `SHASUMS256.txt`, unpacked into `~/.local/lib/nodejs` with `node`,
+  `npm`, `npx` linked into `~/.local/bin`; no root and no extra apt source (owner's
+  choice over NodeSource). `OPENSPEC_TELEMETRY=0` at the top of `.bashrc`, like the
+  token, since OpenSpec's telemetry is on by default (owner, 2026-11-06). No
+  `openspec init`: that adds files to a project and is the project's decision.
+  [owner, 2026-11-06]
+- No opt-out for kaizen and its companions, although they are third-party and add a
+  download of about 30 MB: the owner's own recommendation, "let's push it on people a
+  bit unless they complain", "I like more people using it". An opt-out comes when
+  someone asks for one. [owner, 2026-11-06]
 - With `DEVVM_CLAUDE_TOKEN_FILE` (from `claude setup-token` on the host; a warning if
   the file is readable by others), the token goes over SSH's stdin, not as an argument,
   which process listings show. In the VM: `~/.config/devvm/claude-oauth-token`, mode
@@ -309,3 +323,5 @@ Things the sources do not settle; the answers belong here once decided.
 4. Help per command (`devvm snapshot --help` prints the whole usage) was deferred
    ("scoped help later"). [S]
 5. Should the kaizen plugin in `setup-dev` have an opt-out? Offered, not decided. [S]
+   Decided 2026-11-06 for kaizen and its companions: no opt-out until someone asks for
+   one; see "setup-dev and the Claude Code token".
