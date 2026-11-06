@@ -116,6 +116,8 @@ From the owner, in the sessions [S]:
   no GitHub credentials.
 - Try workflow changes locally with `act` before pushing; put such hints "where users
   and agents can find it" (README, `CLAUDE.md`).
+- The kaizen plugin's standing instructions for agents apply, merged into `CLAUDE.md`
+  ("Working rules"). [owner, 2026-11-06]
 
 ## Operating conditions
 
