@@ -68,7 +68,9 @@ free to do all of that, while its mistakes must not hit the host [README].
 - **F11 Development setup**: `setup-dev` copies the host's git identity, installs Claude
   Code, and optionally passes a Claude Code token so that new VMs need no login. It also
   installs the kaizen plugin, the owner's "personal collection" of skills, by default,
-  and the tools for terminal screenshots its hallway test needs. The token exists
+  and the tools for terminal screenshots its hallway test needs, and the two companions
+  kaizen recommends, Matt Pocock's skills and OpenSpec, without an opt-out ("let's push
+  it on people a bit unless they complain") [owner, 2026-11-06]. The token exists
   because "logging in to claude over and over again was annoying". [be74a09, fab53b7, #1, S]
 - **F12 Installation and update** from a git clone, without root. [c071b47]
 - **F13 Lifecycle**: list, status, start, stop (both wait until done), destroy, and

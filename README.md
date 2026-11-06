@@ -281,7 +281,14 @@ which let an agent drive a terminal and judge it by screenshots (the `hallway-te
 skill of the kaizen plugin), and Claude Code with the official installer
 (`https://claude.ai/install.sh`) into `~/.local/bin`, then the `kaizen` plugin (skills for
 requirements, walk-throughs, hallway tests and debriefs) from the `uellue/skills`
-marketplace, at user scope. Log in on the first start of
+marketplace, at user scope. It also installs the two companions kaizen recommends:
+[Matt Pocock's skills](https://github.com/mattpocock/skills) (`mattpocock-skills`, at
+user scope; its `code-review` skill shares the name of Claude Code's built-in
+`/code-review`, call it as `/mattpocock-skills:code-review`) and
+[OpenSpec](https://github.com/Fission-AI/OpenSpec) (`openspec`, from npm), with
+Node.js 22 LTS from nodejs.org (checksum verified) in `~/.local`, since Debian's is too
+old. OpenSpec's telemetry is turned off with `OPENSPEC_TELEMETRY=0` in `~/.bashrc`.
+`setup-dev` does not run `openspec init` in your project. Log in on the first start of
 `claude` in the VM; that login is stored in the VM only. Claude's commits appear in the
 worktree on the host right away; review them there and push upstream from the host.
 
