@@ -118,9 +118,9 @@ files.
 
 By default (`DEVVM_SHARE_WORKSPACE=1`), `create` shares the checkout of the current
 directory with the VM, read-write, at `DEVVM_WORKSPACE_ROOT/<folder name>`
-(`/workspaces/...`). Interactive login shells (`devvm ssh` without a command) start
-there; `devvm ssh CMD` is plain `ssh`: no login shell, so it starts in the home
-directory and without `~/.local/bin` on the `PATH`. The VM user has the uid and gid of the
+(`/workspaces/...`). `devvm ssh` starts there, and so does `devvm ssh CMD`, unless the
+arguments begin with an ssh option (`devvm ssh -L ...`). `devvm ssh CMD` is no login
+shell, so it runs without `~/.local/bin` on the `PATH`. The VM user has the uid and gid of the
 host user, so files keep their owner on both sides; files that containers create as
 root or other users keep those owners on the host, as with Docker on the host. Commits
 made in the VM are commits in the host repository, and `push`/`fetch` are not needed.

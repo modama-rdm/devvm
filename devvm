@@ -49,7 +49,7 @@ SITE_ENV=$USER_HOME/.config/devvm/site.env
 confirm() {
     local prompt=$1 hint=${2:-} answer
     if [ ! -t 0 ]; then
-        echo "$prompt: no terminal to confirm${hint:+; $hint}" >&2
+        echo "$prompt (no terminal to confirm${hint:+; $hint})" >&2
         exit 1
     fi
     read -rp "$prompt [y/N] " answer
@@ -326,7 +326,7 @@ named after the branch, unless set with: $PROG use VM
                     at $DEVVM_WORKSPACE_ROOT/<folder> unless DEVVM_SHARE_WORKSPACE=0, and DEVVM_MOUNTS;
                     then waits for it (as wait) and takes snapshot "clean", unless --no-wait
   wait              wait until cloud-init (and the project's provisioning) has finished
-  ssh [CMD...]      log in to the VM or run a command there
+  ssh [CMD...]      log in to the VM or run CMD there, both in the workspace
   ip                print the VM's IP address
   status [-v]       show VM state, size, workspace and snapshots; -v adds virsh's details
   start             boot the VM, restore a saved one, or continue a paused one; wait
@@ -347,16 +347,16 @@ named after the branch, unless set with: $PROG use VM
                     the checkout; exits with the tests' status
   destroy [-y]      remove the VM, its disk and snapshots (keeps base image and host key)
   prune             delete base images that no VM disk and no current setting uses
+  setup-dev         copy the host's git identity and install Claude Code in the VM, with
+                    the kaizen plugin (uellue/skills), its companions Matt Pocock's skills
+                    and OpenSpec (with Node.js), and the tools for terminal screenshots
+                    (xvfb, xterm, xdotool, imagemagick)
 
   For VMs created with DEVVM_SHARE_WORKSPACE=0:
   push [REF]        push REF (default: the branch checked out here) from the host
                     repository to the VM's checkout ~/${DEVVM_VM_REPO:-REPO}; origin/BRANCH
                     becomes branch BRANCH in the VM
   fetch             fetch the VM's branches into the host as ${DEVVM_VM_NAME:-VM}/*
-  setup-dev         copy the host's git identity and install Claude Code in the VM, with
-                    the kaizen plugin (uellue/skills), its companions Matt Pocock's skills
-                    and OpenSpec (with Node.js), and the tools for terminal screenshots
-                    (xvfb, xterm, xdotool, imagemagick)
 EOF
     if [ -n "$PROJECT_USAGE" ]; then
         printf '\nCommands of this project (%s):\n%s\n' "$PROJECT_DIR/commands.sh" "$PROJECT_USAGE"
@@ -463,6 +463,22 @@ write_known_hosts() {
     [ -f "$HOSTKEY.pub" ] || { echo "No host key $HOSTKEY.pub, was the VM created by $PROG?" >&2; exit 1; }
     as_user mkdir -p "$DEVVM_POOL_DIR"
     echo "$DEVVM_VM_NAME $(cut -d' ' -f1,2 "$HOSTKEY.pub")" | as_user tee "$KNOWN_HOSTS" > /dev/null
+}
+
+# Login shells start in the workspace through this script, written by create
+WS_PROFILE=/etc/profile.d/devvm-workspace.sh
+
+# `devvm ssh CMD` runs CMD where a login would start, through the same profile script
+# [owner, 2026-11-07, after the hallway test of that day]. Arguments that begin with an
+# option go to ssh unchanged (e.g. -L 8080:localhost:8080): where the command starts
+# among them is ssh's to parse, not devvm's.
+cmd_ssh() {
+    require_vm
+    if [ $# -eq 0 ] || [[ $1 == -* ]]; then
+        vm_ssh "$@"
+    else
+        vm_ssh "[ -r $WS_PROFILE ] && . $WS_PROFILE;" "$@"
+    fi
 }
 
 vm_ssh() {
@@ -712,7 +728,7 @@ EOS
     guest_git_links
     echo "systemctl daemon-reload"
     # Login shells start in the workspace, like a devcontainer terminal
-    echo "echo $(printf %q "if [ \"\$PWD\" = \"\$HOME\" ] && [ -d $GUEST_WS ]; then cd $GUEST_WS; fi") > /etc/profile.d/devvm-workspace.sh"
+    echo "echo $(printf %q "if [ \"\$PWD\" = \"\$HOME\" ] && [ -d $GUEST_WS ]; then cd $GUEST_WS; fi") > $WS_PROFILE"
     # The host's git identity, as devcontainers copy .gitconfig
     local key val cmd=''
     for key in user.name user.email; do
@@ -811,7 +827,7 @@ next_steps() {
         echo "    $PROG test [ARGS...]     reset to \"clean\" and run: $DEVVM_TEST_COMMAND [ARGS...]"
     else
         echo "    $PROG test [ARGS...]     after setting DEVVM_TEST_COMMAND in .devvm/config.env, see README"
-        echo "    or by hand: $PROG reset, then $PROG ssh 'cd $ws && ...'"
+        echo "    or by hand: $PROG reset, then $PROG ssh '...' (runs in $ws)"
     fi
 }
 
@@ -1163,6 +1179,7 @@ cmd_start() {
             await_ssh resumed
             sync_clock
             return ;;
+        running) echo "$DEVVM_VM_NAME is already running"; return ;;
         *) echo "$DEVVM_VM_NAME is $state, not shut off"; return ;;
     esac
     check_shares start
@@ -1294,6 +1311,10 @@ cmd_ls() {
         mark=' '; [ "$name" = "$DEVVM_VM_NAME" ] && mark='*'
         printf '%s %-28s %-10s %-16s %6s  %s\n' "$mark" "$name" "$state" "${ip:--}" "${size:--}" "$snaps"
     done < <(virsh list --all --name | grep "$filter" | sort)
+    # A first user may not know the name this checkout's VM gets [hallway test 2026-11-07]
+    if [ -n "${DEVVM_VM_NAME:-}" ] && ! virsh dominfo "$DEVVM_VM_NAME" &> /dev/null; then
+        echo "No VM $DEVVM_VM_NAME for this checkout yet: $PROG create" >&2
+    fi
 }
 
 cmd_prune() {
@@ -1395,7 +1416,11 @@ cmd_test() {
         esac
     done
     if [ -z "${DEVVM_TEST_COMMAND:-}" ]; then
-        echo "No test command: set DEVVM_TEST_COMMAND in $PROJECT_DIR/config.env, see README" >&2
+        if [ -f "$PROJECT_DIR/config.env" ]; then
+            echo "No test command: set DEVVM_TEST_COMMAND in $PROJECT_DIR/config.env, see README" >&2
+        else
+            echo "No test command: run $PROG init, then set DEVVM_TEST_COMMAND in $PROJECT_DIR/config.env" >&2
+        fi
         exit 1
     fi
     require_vm
@@ -1446,7 +1471,7 @@ case "${1:-}" in
     use) shift; cmd_use "$@" ;;
     create) shift; cmd_create "$@" ;;
     wait) no_args wait "${@:2}"; require_vm; cmd_wait ;;
-    ssh) shift; require_vm; vm_ssh "$@" ;;
+    ssh) shift; cmd_ssh "$@" ;;
     ip) no_args ip "${@:2}"; require_vm; require_ip ;;
     status) shift; cmd_status "$@" ;;
     start) no_args start "${@:2}"; cmd_start ;;
