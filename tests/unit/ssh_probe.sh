@@ -88,7 +88,7 @@ test_start_of_a_running_vm_does_nothing() {
     . "$DEVVM"
     stub_vm running
     out=$(cmd_start 2>&1)
-    assert_contains "$out" "is running, not shut off"
+    assert_contains "$out" "is already running"
     [ ! -f "$TMP/probes" ] || fail "probed SSH"
 }
 

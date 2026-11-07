@@ -111,7 +111,12 @@ Main settings: `VM_PREFIX` (default `<main repository name>-`), `VM_NAME`, `VCPU
     link to their module directories by relative paths [#8, PR #9].
 - `gc.worktreePruneExpire=never` for the VM user: the VM does not see the host's other
   worktrees, and `git gc` would prune them from the shared repository.
-- The host's git `user.name` and `user.email`; login shells `cd` into the workspace.
+- The host's git `user.name` and `user.email`; login shells `cd` into the workspace,
+  through `/etc/profile.d/devvm-workspace.sh`. `devvm ssh CMD` sources the same script
+  before CMD, so that it starts where a login does, also on a VM named with `-n`.
+  Arguments that begin with `-` go to ssh unchanged, since only ssh knows where the
+  command starts among its options; a VM without the script stays in the home
+  directory. [owner, 2026-11-07, hallway test 2026-11-07]
 
 ## Shared folders and mounts
 
@@ -284,6 +289,12 @@ usage, then the error, exit 1; one message for a missing VM (`require_vm`); `sto
 `start` wait (until off, until SSH answers); `status` is a short summary, `-v` adds
 `virsh dominfo`; confirmations (`destroy`, `setup` overwrite) fail without a terminal
 and say how to skip them (`-y`). [a15003f]
+
+From the hallway test of 2026-11-07 (a first user following only the output): a
+message that names a missing file says how to create it (`test` without
+`.devvm/config.env`: run `init`); `ls` says when this checkout has no VM yet and
+names `create`; `start` on a running VM says "already running"; the help lists
+`setup-dev` with the commands for all VMs. [owner, 2026-11-07]
 
 ## Install and update
 

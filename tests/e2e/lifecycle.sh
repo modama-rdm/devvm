@@ -114,10 +114,11 @@ EOF
         tr ' ' '\n' <<< "$out" | grep -qx "$g" || fail "VM user not in $g: $out"
     done
     "$DEVVM" ssh tail -n 1 /var/log/cloud-init-output.log > /dev/null
-    assert_eq "$("$DEVVM" ssh cat provisioned)" provisioned "provisioning"
+    assert_eq "$("$DEVVM" ssh "cat ~/provisioned")" provisioned "provisioning"
 
     step "shared workspace"
-    "$DEVVM" ssh "touch /workspaces/repo/from-vm"
+    assert_eq "$("$DEVVM" ssh pwd)" /workspaces/repo "ssh CMD runs in the workspace"
+    "$DEVVM" ssh "touch from-vm"
     [ -O from-vm ] || fail "file from the VM missing or not owned by $(id -un)"
 
     step "setup-dev: screenshot tools, kaizen and its companions"
@@ -133,9 +134,9 @@ EOF
     assert_eq "$("$DEVVM" ssh 'echo "$OPENSPEC_TELEMETRY"')" "0"
 
     step "snapshots: create, list, refuse duplicate, update, reset, delete"
-    "$DEVVM" ssh "echo v1 > snapmark"
+    "$DEVVM" ssh "echo v1 > ~/snapmark"
     "$DEVVM" snapshot dev
-    "$DEVVM" ssh "echo v2 > snapmark"
+    "$DEVVM" ssh "echo v2 > ~/snapmark"
     rc=0
     "$DEVVM" snapshot dev > "$TMP/dup.log" 2>&1 || rc=$?
     [ "$rc" -ne 0 ] || fail "snapshot dev over an existing one succeeded"
@@ -145,9 +146,9 @@ EOF
     assert_contains "$out" "dev"
     assert_contains "$("$DEVVM" ls)" "clean, dev"
     "$DEVVM" snapshot -u dev
-    "$DEVVM" ssh "echo v3 > snapmark"
+    "$DEVVM" ssh "echo v3 > ~/snapmark"
     "$DEVVM" reset dev
-    assert_eq "$("$DEVVM" ssh cat snapmark)" v2 "state after reset to the updated snapshot"
+    assert_eq "$("$DEVVM" ssh "cat ~/snapmark")" v2 "state after reset to the updated snapshot"
     "$DEVVM" snapshot -u fresh   # -u creates a missing snapshot
     "$DEVVM" snapshot -d dev fresh
     out=$("$DEVVM" snapshot -l)
@@ -219,14 +220,14 @@ EOF
     assert_eq "$("$DEVVM" ssh ls /data)" from-vm "shared folder after the restore"
 
     step "test: reset, arguments, login shell"
-    "$DEVVM" ssh "touch leftover"
+    "$DEVVM" ssh "touch ~/leftover"
     out=$("$DEVVM" test 0 'a b' "c'd")
     assert_not_contains "$out" "leftover"
     assert_contains "$out" "login PATH"
     assert_contains "$out" "[0][a b][c'd]"
 
     step "test: exit status"
-    "$DEVVM" ssh "touch leftover"
+    "$DEVVM" ssh "touch ~/leftover"
     rc=0
     out=$("$DEVVM" test --no-reset 3) || rc=$?
     assert_eq "$rc" 3 "exit status of devvm test"

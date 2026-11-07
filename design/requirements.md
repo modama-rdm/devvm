@@ -136,8 +136,10 @@ From the owner, in the sessions [S]:
   `git clean -fdx` in the VM acts on the host checkout. [README]
 - The share supports no POSIX ACLs or `chattr`; volumes cover that. [c3df199]
 - Mounts are fixed when the VM is created. [README]
-- `devvm ssh CMD` is plain `ssh`: no login shell, home directory, arguments re-parsed.
-  [HT, README]
+- `devvm ssh CMD` is plain `ssh` apart from its directory: no login shell, arguments
+  re-parsed. [HT, README] It runs in the workspace, where a login starts: a first user
+  ran `devvm ssh ./test.sh` and got "No such file or directory". [owner, 2026-11-07,
+  hallway test 2026-11-07]
 - Branch names that differ only in non-alphanumeric characters (`a/b`, `a-b`) map to
   the same VM name; no detection. [HT; owner, 2026-11-04]
 
